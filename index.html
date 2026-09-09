@@ -10,7 +10,6 @@
 </head>
 <body>
 <div id="root"></div>
-
 <script>
 "use strict";
 const { useState, useRef, useEffect } = React;
@@ -292,8 +291,14 @@ function normalizeTimeValue(value) {
     if (value.includes('T')) {
         const d = new Date(value);
         if (!isNaN(d.getTime())) {
-            const hh = String(d.getUTCHours()).padStart(2, '0');
-            const mm = String(d.getUTCMinutes()).padStart(2, '0');
+            // Apps Script menyimpan & membaca jam sesuai zona waktu proyeknya (WIB/UTC+7),
+            // tapi saat dikirim sebagai JSON otomatis dikonversi ke UTC (dikurangi 7 jam).
+            // Tambahkan lagi 7 jam di sini supaya kembali ke jam WIB yang sebenarnya dimasukkan.
+            const WIB_OFFSET_MINUTES = 7 * 60;
+            let totalMinutes = d.getUTCHours() * 60 + d.getUTCMinutes() + WIB_OFFSET_MINUTES;
+            totalMinutes = ((totalMinutes % 1440) + 1440) % 1440; // bungkus 0-23:59
+            const hh = String(Math.floor(totalMinutes / 60)).padStart(2, '0');
+            const mm = String(totalMinutes % 60).padStart(2, '0');
             return `${hh}:${mm}`;
         }
     }
