@@ -15,6 +15,45 @@ const DISABILITY_OPTIONS = [
   'Disabilitas Mental (Perkembangan)'
 ];
 
+// GANTI dengan URL Web App hasil deploy Google Apps Script (lihat panduan di bawah/terpisah).
+// Contoh: 'https://script.google.com/macros/s/AKfycb.../exec'
+const GOOGLE_SHEET_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwgE4SLXOjR1I5BDiH5Jt55Fy3rpgCgaCzAoLJIOJwt8mBr6ChljbDrs1BQb_pt4O-60A/exec';
+
+// Kirim data kehadiran ke Google Sheets lewat Apps Script Web App.
+// Pakai mode 'no-cors' karena Apps Script Web App tidak mengizinkan pembacaan response
+// dari domain lain, tapi permintaannya tetap sampai & tercatat di spreadsheet.
+async function syncAttendanceToSheet(participant, meeting) {
+  if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL')) {
+    console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi — data tidak dikirim ke spreadsheet.');
+    return;
+  }
+  try {
+    await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain' }, // hindari CORS preflight yang sering diblokir Apps Script
+      body: JSON.stringify({
+        kegiatan: meeting.title,
+        tanggal: meeting.date,
+        lokasi: meeting.location,
+        nama: participant.name,
+        gender: participant.gender,
+        institusi: participant.institution,
+        jabatan: participant.role,
+        telepon: participant.phone,
+        disabilitas: participant.notDisabled
+          ? 'Bukan Disabilitas'
+          : (participant.declineDisabilityInfo
+              ? 'Tidak bersedia menyebutkan'
+              : [...(participant.disabilities || []), participant.disabilityOther].filter(Boolean).join(', ')),
+        waktuAbsen: new Date().toISOString(),
+      }),
+    });
+  } catch (err) {
+    console.error('Gagal mengirim data ke Google Sheets:', err);
+  }
+}
+
 export default function App() {
   // Global States
   const [view, setView] = useState('list'); // 'list', 'sign', 'thankyou', 'admin', 'self-register'
@@ -106,9 +145,11 @@ export default function App() {
   };
 
   const handleSaveSignature = (signatureDataUrl) => {
+    const signedParticipant = { ...activeParticipant, signature: signatureDataUrl };
     setParticipants(prev => 
-      prev.map(p => p.id === activeParticipant.id ? { ...p, signature: signatureDataUrl } : p)
+      prev.map(p => p.id === activeParticipant.id ? signedParticipant : p)
     );
+    syncAttendanceToSheet(signedParticipant, meeting); // Kirim catatan kehadiran ke Google Sheets
     setView('thankyou');
     setTimeout(() => {
       setView('list');
