@@ -44,6 +44,8 @@ const Settings = (p) => <Icon {...p}><circle cx="12" cy="12" r="3"/><path d="M19
 const Printer = (p) => <Icon {...p}><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></Icon>;
 const ImageIcon = (p) => <Icon {...p}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></Icon>;
 const CheckSquare = (p) => <Icon {...p}><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></Icon>;
+const Clock = (p) => <Icon {...p}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></Icon>;
+const Wifi = (p) => <Icon {...p}><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></Icon>;
 
 // Konstanta untuk opsi disabilitas
 const DISABILITY_OPTIONS = [
@@ -91,6 +93,114 @@ async function syncAttendanceToSheet(participant, meeting) {
     });
   } catch (err) {
     console.error('Gagal mengirim data ke Google Sheets:', err);
+  }
+}
+
+// Kirim pengaturan kegiatan (judul, jam, mode, lokasi, dll) ke tab "Pengaturan" di
+// spreadsheet yang sama, dikelompokkan per tanggal — supaya semua perangkat yang
+// membuka halaman ini otomatis melihat data yang sama, tanpa perlu simpan manual
+// di tiap perangkat. Butuh Apps Script versi terbaru (lihat panduan terpisah).
+async function syncSettingsToSheet(meeting) {
+  if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL')) {
+    console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi — pengaturan tidak dikirim ke spreadsheet.');
+    return false;
+  }
+  try {
+    await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'saveSettings',
+        date: meeting.date,
+        title: meeting.title,
+        time: meeting.time,
+        mode: meeting.mode,
+        location: meeting.location,
+        allowManualEntry: meeting.allowManualEntry,
+      }),
+    });
+    return true; // no-cors: kita tidak bisa baca respons, tapi permintaan sudah terkirim
+  } catch (err) {
+    console.error('Gagal menyimpan pengaturan ke Google Sheets:', err);
+    return false;
+  }
+}
+
+// Kirim data satu peserta (identitas, disabilitas, tanda tangan) ke tab "Peserta" di
+// spreadsheet — di-upsert berdasarkan ID, jadi dipakai baik saat admin menambah peserta
+// (belum TTD) maupun saat peserta menandatangani (dengan TTD). Tanda tangan otomatis
+// di-upload ke Google Drive oleh Apps Script, spreadsheet hanya menyimpan link-nya.
+async function syncParticipantToSheet(meeting, participant, opts = {}) {
+  if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL')) {
+    console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi — data peserta tidak dikirim ke spreadsheet.');
+    return false;
+  }
+  try {
+    await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'saveParticipant',
+        id: participant.id,
+        tanggal: meeting.date,
+        kegiatan: meeting.title,
+        lokasi: meeting.location,
+        nama: participant.name,
+        gender: participant.gender,
+        institusi: participant.institution,
+        jabatan: participant.role,
+        telepon: participant.phone,
+        notDisabled: participant.notDisabled,
+        disabilitas: (participant.disabilities || []).join(', '),
+        disabilitasLainnya: participant.disabilityOther || '',
+        tolakSebutkan: participant.declineDisabilityInfo,
+        // Kirim base64 TTD hanya kalau baru digambar (bukan URL Drive yang sudah tersimpan sebelumnya)
+        signature: (!opts.clearSignature && participant.signature && participant.signature.startsWith('data:')) ? participant.signature : '',
+        clearSignature: !!opts.clearSignature,
+        waktuAbsen: participant.signature ? new Date().toISOString() : '',
+      }),
+    });
+    return true;
+  } catch (err) {
+    console.error('Gagal menyimpan data peserta ke Google Sheets:', err);
+    return false;
+  }
+}
+
+// Hapus satu baris peserta dari tab "Peserta" di spreadsheet.
+async function deleteParticipantFromSheet(meeting, participantId) {
+  if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL')) return false;
+  try {
+    await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'deleteParticipant', id: participantId, tanggal: meeting.date }),
+    });
+    return true;
+  } catch (err) {
+    console.error('Gagal menghapus data peserta di Google Sheets:', err);
+    return false;
+  }
+}
+
+// Ambil pengaturan kegiatan + seluruh daftar peserta untuk tanggal tertentu dari
+// spreadsheet sekaligus (satu request), dipakai saat halaman pertama dibuka supaya
+// semua perangkat menampilkan data yang sama persis.
+async function fetchAllDataFromSheet(date) {
+  if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL')) return null;
+  try {
+    const url = `${GOOGLE_SHEET_WEBHOOK_URL}?action=getData&date=${encodeURIComponent(date)}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || data.error) return null;
+    return { settings: data.settings || null, participants: Array.isArray(data.participants) ? data.participants : [] };
+  } catch (err) {
+    console.error('Gagal mengambil data dari Google Sheets (mungkin Apps Script belum di-update):', err);
+    return null;
   }
 }
 
@@ -147,13 +257,16 @@ function App() {
   // (bukan lagi judul contoh/dummy).
   const [meeting, setMeeting] = useState(() => {
     const saved = loadSavedDataForDate(todayStr);
-    if (saved && saved.meeting) return saved.meeting;
-    return {
+    const defaults = {
       title: '',
       date: todayStr,
+      time: '',
+      mode: 'Offline', // 'Offline' atau 'Online'
       location: '',
       allowManualEntry: true
     };
+    if (saved && saved.meeting) return { ...defaults, ...saved.meeting };
+    return defaults;
   });
 
   // PDF Header State
@@ -191,6 +304,23 @@ function App() {
     `;
     document.head.appendChild(style);
     return () => document.head.removeChild(style);
+  }, []);
+
+  // Saat halaman pertama kali dibuka, coba ambil pengaturan + daftar peserta untuk
+  // tanggal ini dari spreadsheet. Kalau berhasil, pakai itu (supaya semua perangkat
+  // seragam, real-time) — kalau gagal (mis. Apps Script belum di-update, atau offline),
+  // tetap pakai data lokal (localStorage) yang sudah dimuat sebelumnya.
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      const remote = await fetchAllDataFromSheet(todayStr);
+      if (isMounted && remote) {
+        if (remote.settings) setMeeting(prev => ({ ...prev, ...remote.settings }));
+        setParticipants(remote.participants);
+      }
+    })();
+    return () => { isMounted = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // --- HANDLERS ---
@@ -231,7 +361,8 @@ function App() {
     setParticipants(prev => 
       prev.map(p => p.id === activeParticipant.id ? signedParticipant : p)
     );
-    syncAttendanceToSheet(signedParticipant, meeting); // Kirim catatan kehadiran ke Google Sheets
+    syncAttendanceToSheet(signedParticipant, meeting); // Catat ke tab riwayat "Kehadiran" (audit trail)
+    syncParticipantToSheet(meeting, signedParticipant); // Update tab "Peserta" + upload TTD ke Google Drive
     setView('thankyou');
     setTimeout(() => {
       setView('list');
@@ -239,17 +370,21 @@ function App() {
     }, 2500);
   };
 
-  // Simpan pengaturan kegiatan (judul, tanggal, lokasi, header PDF) + peserta saat ini
-  // ke localStorage, dikelompokkan berdasarkan tanggal kegiatan (meeting.date).
-  // Dipanggil lewat tombol "Simpan Data" di Portal Admin.
-  const handleSaveMeetingSettings = () => {
-    const success = saveDataForDate(meeting.date, { meeting, pdfHeader, participants });
+  // Simpan pengaturan kegiatan (judul, tanggal, jam, mode, lokasi, header PDF) + peserta
+  // saat ini ke localStorage (cache di perangkat ini) DAN ke spreadsheet (supaya semua
+  // perangkat lain otomatis ikut melihat data yang sama). Dipanggil lewat tombol
+  // "Simpan Data" di Portal Admin.
+  const handleSaveMeetingSettings = async () => {
+    const localSuccess = saveDataForDate(meeting.date, { meeting, pdfHeader, participants });
+    const remoteSuccess = await syncSettingsToSheet(meeting);
     setModal({
       isOpen: true,
       type: 'alert',
-      message: success
-        ? `Data kegiatan untuk tanggal ${meeting.date} berhasil disimpan. Judul ini akan otomatis tampil setiap halaman dibuka pada tanggal tersebut.`
-        : 'Gagal menyimpan data. Coba lagi.'
+      message: !localSuccess
+        ? 'Gagal menyimpan data di perangkat ini. Coba lagi.'
+        : remoteSuccess
+          ? `Data kegiatan untuk tanggal ${meeting.date} berhasil disimpan dan dikirim ke spreadsheet — akan otomatis muncul di semua perangkat yang membuka halaman ini pada tanggal yang sama.`
+          : `Data tersimpan di perangkat ini, tapi gagal terkirim ke spreadsheet. Pastikan koneksi internet aktif dan Apps Script sudah menggunakan versi terbaru.`
     });
   };
 
@@ -481,9 +616,20 @@ function ParticipantListView({ meeting, participants, onSignClick, onSelfRegiste
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 md:p-6 relative overflow-hidden">
         <div className="absolute top-0 left-0 w-2 h-full bg-blue-500"></div>
         <h2 className="text-xl font-bold text-gray-900 mb-4">{meeting.title}</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-600">
-          <div className="flex items-center gap-2"><Calendar className="text-blue-500" size={18} /><span className="font-medium">{formattedDate}</span></div>
-          <div className="flex items-center gap-2"><MapPin className="text-blue-500" size={18} /><span>{meeting.location}</span></div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm text-gray-600">
+          <div className="flex items-center gap-2"><Calendar className="text-blue-500 shrink-0" size={18} /><span className="font-medium">{formattedDate}</span></div>
+          {meeting.time && (
+            <div className="flex items-center gap-2"><Clock className="text-blue-500 shrink-0" size={18} /><span className="font-medium">Pukul {meeting.time} WIB</span></div>
+          )}
+          <div className="flex items-center gap-2">
+            {meeting.mode === 'Online' ? <Wifi className="text-blue-500 shrink-0" size={18} /> : <MapPin className="text-blue-500 shrink-0" size={18} />}
+            <span>{meeting.location}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${meeting.mode === 'Online' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+              {meeting.mode === 'Online' ? 'Online (Daring)' : 'Offline (Tatap Muka)'}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -763,8 +909,25 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
   const handleAddParticipant = (e) => {
     e.preventDefault();
     if (!newParticipant.name.trim()) return;
-    setParticipants(prev => [...prev, { ...newParticipant, id: Date.now(), signature: null }]);
+    const newP = { ...newParticipant, id: Date.now(), signature: null };
+    setParticipants(prev => [...prev, newP]);
     setNewParticipant({ name: '', gender: 'L', institution: '', role: '', phone: '', disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false });
+    syncParticipantToSheet(meeting, newP); // Simpan ke tab "Peserta" (belum TTD) supaya terlihat di semua perangkat
+  };
+
+  const handleDeleteParticipant = (p) => {
+    showConfirm('Hapus?', () => {
+      setParticipants(arr => arr.filter(x => x.id !== p.id));
+      deleteParticipantFromSheet(meeting, p.id);
+    });
+  };
+
+  const handleResetSignatures = () => {
+    showConfirm('Reset semua TTD?', () => {
+      const toReset = participants.filter(x => x.signature);
+      setParticipants(p => p.map(x => ({...x, signature: null})));
+      toReset.forEach(x => syncParticipantToSheet(meeting, x, { clearSignature: true }));
+    });
   };
 
   return (
@@ -782,9 +945,31 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
             <h3 className="font-bold text-gray-800 border-b pb-2">Detail Kegiatan</h3>
-            <textarea name="title" value={meeting.title} onChange={handleMeetingChange} rows="3" className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" />
-            <input type="date" name="date" value={meeting.date} onChange={handleMeetingChange} className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"/>
-            <input type="text" name="location" value={meeting.location} onChange={handleMeetingChange} className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"/>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Nama Kegiatan</label>
+              <textarea name="title" value={meeting.title} onChange={handleMeetingChange} rows="3" className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" />
+            </div>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Tanggal</label>
+                <input type="date" name="date" value={meeting.date} onChange={handleMeetingChange} className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"/>
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Jam Kegiatan</label>
+                <input type="time" name="time" value={meeting.time} onChange={handleMeetingChange} className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"/>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Pelaksanaan</label>
+              <select name="mode" value={meeting.mode} onChange={handleMeetingChange} className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50">
+                <option value="Offline">Offline (Tatap Muka)</option>
+                <option value="Online">Online (Daring)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">{meeting.mode === 'Online' ? 'Link / Platform Online' : 'Lokasi Kegiatan'}</label>
+              <input type="text" name="location" value={meeting.location} onChange={handleMeetingChange} placeholder={meeting.mode === 'Online' ? 'Contoh: Zoom Meeting / Google Meet' : 'Contoh: Aula Gedung...'} className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"/>
+            </div>
             <label className="flex items-start gap-3 cursor-pointer p-3 mt-2 bg-blue-50 rounded-lg border border-blue-100">
               <input type="checkbox" name="allowManualEntry" checked={meeting.allowManualEntry} onChange={handleMeetingChange} className="w-4 h-4 mt-0.5 text-blue-600 rounded"/>
               <div><span className="text-sm font-bold text-blue-900 block">Izinkan Isi Mandiri</span></div>
@@ -842,7 +1027,7 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             <div className="p-4 border-b flex justify-between bg-gray-50">
               <h3 className="font-bold text-gray-800">Database Kehadiran</h3>
               <div className="flex gap-2">
-                 <button onClick={() => showConfirm('Reset semua TTD?', () => setParticipants(p => p.map(x => ({...x, signature: null}))))} className="text-xs text-red-600 border px-2 py-1 rounded hover:bg-red-50">Reset TTD</button>
+                 <button onClick={handleResetSignatures} className="text-xs text-red-600 border px-2 py-1 rounded hover:bg-red-50">Reset TTD</button>
                  <button onClick={() => window.print()} className="text-xs bg-indigo-600 text-white px-3 py-1 rounded">Cetak PDF</button>
               </div>
             </div>
@@ -865,7 +1050,7 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                          : <span className="text-gray-400">Belum diisi</span>}
                       </td>
                       <td className="px-4 py-2 text-center">{p.signature ? <span className="text-green-600 font-bold">✓</span> : '-'}</td>
-                      <td className="px-4 py-2 text-center"><button onClick={() => showConfirm('Hapus?', () => setParticipants(arr => arr.filter(x => x.id !== p.id)))} className="text-red-500"><Trash2 size={16}/></button></td>
+                      <td className="px-4 py-2 text-center"><button onClick={() => handleDeleteParticipant(p)} className="text-red-500"><Trash2 size={16}/></button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -913,8 +1098,9 @@ function PrintTemplate({ meeting, participants, pdfHeader, logoError }) {
             <table className="text-[11px] font-medium">
               <tbody>
                 <tr><td className="pr-4 py-0.5 align-top whitespace-nowrap">Nama Kegiatan/Workshop</td><td className="px-1 py-0.5 align-top">:</td><td className="py-0.5 font-bold uppercase">{meeting.title}</td></tr>
-                <tr><td className="pr-4 py-0.5 align-top whitespace-nowrap">Hari & Tanggal</td><td className="px-1 py-0.5 align-top">:</td><td className="py-0.5">{formattedDate}</td></tr>
-                <tr><td className="pr-4 py-0.5 align-top whitespace-nowrap">Lokasi Kegiatan</td><td className="px-1 py-0.5 align-top">:</td><td className="py-0.5">{meeting.location}</td></tr>
+                <tr><td className="pr-4 py-0.5 align-top whitespace-nowrap">Hari & Tanggal</td><td className="px-1 py-0.5 align-top">:</td><td className="py-0.5">{formattedDate}{meeting.time ? `, Pukul ${meeting.time} WIB` : ''}</td></tr>
+                <tr><td className="pr-4 py-0.5 align-top whitespace-nowrap">Pelaksanaan</td><td className="px-1 py-0.5 align-top">:</td><td className="py-0.5">{meeting.mode === 'Online' ? 'Online (Daring)' : 'Offline (Tatap Muka)'}</td></tr>
+                <tr><td className="pr-4 py-0.5 align-top whitespace-nowrap">{meeting.mode === 'Online' ? 'Link/Platform' : 'Lokasi Kegiatan'}</td><td className="px-1 py-0.5 align-top">:</td><td className="py-0.5">{meeting.location}</td></tr>
               </tbody>
             </table>
           </div>
