@@ -1,0 +1,857 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { 
+  PenTool, CheckCircle, Shield, Plus, Trash2, X, Users, Calendar, 
+  MapPin, ChevronLeft, UserPlus, Settings, Printer, Image as ImageIcon, 
+  Type, FileText, CheckSquare 
+} from 'lucide-react';
+
+// Konstanta untuk opsi disabilitas
+const DISABILITY_OPTIONS = [
+  'Disabilitas Fisik',
+  'Disabilitas Netra',
+  'Disabilitas Rungu dan/Wicara',
+  'Disabilitas Intelektual',
+  'Disabilitas Mental (Psikososial)',
+  'Disabilitas Mental (Perkembangan)'
+];
+
+export default function App() {
+  // Global States
+  const [view, setView] = useState('list'); // 'list', 'sign', 'thankyou', 'admin', 'self-register'
+  const [isAdminAuth, setIsAdminAuth] = useState(false);
+  const [logoError, setLogoError] = useState(false);
+  
+  // Modal State
+  const [modal, setModal] = useState({ isOpen: false, type: '', message: '', onConfirm: null });
+  const [passwordInput, setPasswordInput] = useState('');
+  
+  // Meeting Data State
+  const [meeting, setMeeting] = useState({
+    title: 'Lokakarya Penyusunan Kriteria Profil Kepala Sekolah Perempuan Hebat dan Desain Studi Kasus',
+    date: new Date().toISOString().split('T')[0],
+    location: 'Aula Alikan, Lantai 2 Gedung BBGTK Prov Jabar',
+    allowManualEntry: true
+  });
+
+  // PDF Header State
+  const LOGO_AKSI = "data:image/jpeg;base64,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";
+  const [pdfHeader, setPdfHeader] = useState({
+    text: 'DAFTAR HADIR',
+    logo: LOGO_AKSI // Logo AKSI tertanam langsung di kode (data URL), jadi otomatis tampil tanpa perlu upload manual.
+  });
+
+  // Participants Data State
+  const [participants, setParticipants] = useState([
+    { 
+      id: 1, name: 'Akhik', gender: 'P', institution: 'INOVASI', role: 'Peneliti', phone: '081230666368', 
+      disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: true, // <-- Fitur Baru
+      signature: null 
+    },
+    { 
+      id: 2, name: 'Emmy', gender: 'P', institution: 'INOVASI', role: 'GCP Lead', phone: '081297584440', 
+      disabilities: ['Disabilitas Fisik'], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false,
+      signature: null 
+    },
+  ]);
+
+  const [activeParticipant, setActiveParticipant] = useState(null);
+
+  // Inject CSS Print Khusus
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.innerHTML = `
+      @media print {
+        @page { size: landscape; margin: 10mm 15mm; }
+        body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        ::-webkit-scrollbar { display: none; }
+      }
+      /* Cegah Safari iOS otomatis zoom saat input difokus (butuh font >= 16px) */
+      input, textarea, select { font-size: 16px !important; }
+    `;
+    document.head.appendChild(style);
+    return () => document.head.removeChild(style);
+  }, []);
+
+  // --- HANDLERS ---
+  const handleAdminLogin = () => {
+    if (isAdminAuth) {
+      setView('admin');
+    } else {
+      setPasswordInput('');
+      setModal({ isOpen: true, type: 'login', message: 'Masukkan Password Admin untuk melanjutkan' });
+    }
+  };
+
+  const submitLogin = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (passwordInput === 'admin123') {
+      setIsAdminAuth(true);
+      setModal({ isOpen: false, type: '', message: '', onConfirm: null });
+      setView('admin');
+    } else {
+      setModal({ isOpen: true, type: 'alert', message: 'Password salah!' });
+    }
+  };
+
+  const handleSignClick = (participant) => {
+    setActiveParticipant(participant);
+    setView('sign');
+  };
+
+  const handleSelfRegisterSubmit = (newUserData) => {
+    const newUser = { ...newUserData, id: Date.now(), signature: null };
+    setParticipants(prev => [...prev, newUser]);
+    setActiveParticipant(newUser);
+    setView('sign');
+  };
+
+  const handleSaveSignature = (signatureDataUrl) => {
+    setParticipants(prev => 
+      prev.map(p => p.id === activeParticipant.id ? { ...p, signature: signatureDataUrl } : p)
+    );
+    setView('thankyou');
+    setTimeout(() => {
+      setView('list');
+      setActiveParticipant(null);
+    }, 2500);
+  };
+
+  // --- RENDERERS ---
+  return (
+    <div className="min-h-screen bg-gray-50 font-sans text-gray-800 selection:bg-blue-200 pb-12">
+      
+      <div className="print:hidden">
+        <header className="bg-white border-b shadow-sm sticky top-0 z-10">
+          <div className="max-w-5xl mx-auto px-4 py-4 flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              {pdfHeader.logo && !logoError ? (
+                <img 
+                  src={pdfHeader.logo} 
+                  alt="Logo" 
+                  className="w-10 h-10 object-contain rounded-full shadow-sm bg-white" 
+                  onError={() => setLogoError(true)}
+                />
+              ) : (
+                <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xl shadow-md">A</div>
+              )}
+              <div>
+                <h1 className="font-bold text-lg leading-tight text-gray-900">Daftar Hadir</h1>
+                <p className="text-xs text-gray-500">Absensi Digital Kegiatan</p>
+              </div>
+            </div>
+            {view !== 'list' && view !== 'thankyou' && (
+              <button onClick={() => setView('list')} className="flex items-center gap-1 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-md transition">
+                <ChevronLeft size={16} /> Kembali
+              </button>
+            )}
+          </div>
+        </header>
+
+        <main className="max-w-5xl mx-auto px-4 py-6">
+          {view === 'list' && (
+            <ParticipantListView 
+              meeting={meeting} participants={participants} 
+              onSignClick={handleSignClick} onSelfRegisterClick={() => setView('self-register')}
+            />
+          )}
+          {view === 'self-register' && (
+            <SelfRegisterView onSubmit={handleSelfRegisterSubmit} onCancel={() => setView('list')} />
+          )}
+          {view === 'sign' && activeParticipant && (
+            <SignatureView participant={activeParticipant} onSave={handleSaveSignature} onCancel={() => setView('list')} showAlert={(msg) => setModal({ isOpen: true, type: 'alert', message: msg })}/>
+          )}
+          {view === 'thankyou' && <ThankYouView participant={activeParticipant} />}
+          {view === 'admin' && (
+            <AdminPortal 
+              meeting={meeting} setMeeting={setMeeting} participants={participants} setParticipants={setParticipants}
+              pdfHeader={pdfHeader} setPdfHeader={setPdfHeader} showConfirm={(msg, onConfirm) => setModal({ isOpen: true, type: 'confirm', message: msg, onConfirm })}
+              setLogoError={setLogoError}
+            />
+          )}
+        </main>
+
+        {view === 'list' && (
+          <footer className="max-w-5xl mx-auto px-4 mt-8 text-center text-gray-400">
+            <p className="text-xs mb-2">Pastikan nama Anda terdaftar sebelum menandatangani.</p>
+            <button onClick={handleAdminLogin} className="inline-flex items-center justify-center p-2 opacity-30 hover:opacity-100 transition-opacity bg-gray-200 rounded-full" title="Portal Admin">
+              <Settings size={18} className="text-gray-600" />
+            </button>
+          </footer>
+        )}
+      </div>
+
+      {/* CUSTOM MODAL */}
+      {modal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 print:hidden">
+          <div className="bg-white rounded-xl shadow-lg max-w-sm w-full p-6 animate-in zoom-in-95 duration-200 text-left">
+            <h3 className="font-bold text-lg mb-2">{modal.type === 'login' ? 'Login Admin' : modal.type === 'confirm' ? 'Konfirmasi' : 'Perhatian'}</h3>
+            <p className="text-gray-600 mb-5 text-sm">{modal.message}</p>
+            {modal.type === 'login' && (
+              <div>
+                <input
+                  type="password"
+                  autoFocus
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') submitLogin(e); }}
+                  className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none mb-5 bg-gray-50"
+                  placeholder="Password..."
+                />
+                <div className="flex justify-end gap-3">
+                  <button type="button" onClick={() => setModal({ isOpen: false })} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition">Batal</button>
+                  <button type="button" onClick={submitLogin} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition shadow-sm">Masuk</button>
+                </div>
+              </div>
+            )}
+            {modal.type === 'alert' && (
+              <div className="flex justify-end"><button onClick={() => setModal({ isOpen: false })} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition shadow-sm">Mengerti</button></div>
+            )}
+            {modal.type === 'confirm' && (
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setModal({ isOpen: false })} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition">Batal</button>
+                <button onClick={() => { if(modal.onConfirm) modal.onConfirm(); setModal({ isOpen: false }); }} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition shadow-sm">Ya, Lanjutkan</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TEMPLATE CETAK PDF */}
+      <div className="hidden print:block bg-white text-black w-full text-sm">
+        <PrintTemplate meeting={meeting} participants={participants} pdfHeader={pdfHeader} logoError={logoError} />
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// REUSABLE COMPONENT: DISABILITY FORM
+// ==========================================
+function DisabilityFormSection({ data, onChange }) {
+  
+  // Handler jika memilih "Bukan Disabilitas"
+  const handleNotDisabled = (e) => {
+    const isNotDisabled = e.target.checked;
+    onChange({
+      ...data,
+      notDisabled: isNotDisabled,
+      // Jika dicentang (bukan disabilitas), kosongkan semua pilihan disabilitas
+      disabilities: isNotDisabled ? [] : data.disabilities,
+      disabilityOther: isNotDisabled ? '' : data.disabilityOther,
+      declineDisabilityInfo: isNotDisabled ? false : data.declineDisabilityInfo
+    });
+  };
+
+  const handleCheck = (option) => {
+    let newDisabilities = [...data.disabilities];
+    if (newDisabilities.includes(option)) {
+      newDisabilities = newDisabilities.filter(d => d !== option);
+    } else {
+      newDisabilities.push(option);
+    }
+    onChange({ ...data, disabilities: newDisabilities, declineDisabilityInfo: false, notDisabled: false });
+  };
+
+  const handleDecline = () => {
+    onChange({ 
+      ...data, 
+      declineDisabilityInfo: !data.declineDisabilityInfo,
+      disabilities: !data.declineDisabilityInfo ? [] : data.disabilities,
+      disabilityOther: !data.declineDisabilityInfo ? '' : data.disabilityOther,
+      notDisabled: false
+    });
+  };
+
+  // Apakah area disabilitas harus diredupkan/dimatikan?
+  const isDisabledAreaDisabled = data.notDisabled || data.declineDisabilityInfo;
+
+  return (
+    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/50">
+      <label className="block text-sm font-semibold text-gray-700 mb-3 border-b pb-2">
+        Informasi Ragam Disabilitas (Opsional)
+        <span className="block text-xs text-gray-500 font-normal mt-0.5">Pilih salah satu kondisi di bawah ini.</span>
+      </label>
+      
+      {/* OPSI UTAMA: BUKAN DISABILITAS */}
+      <div className="mb-4 pb-3 border-b border-gray-200">
+        <label className={`flex items-center gap-2 cursor-pointer p-2.5 rounded-lg border transition-colors ${data.notDisabled ? 'bg-green-50 border-green-200' : 'bg-white border-gray-300 hover:bg-gray-50'}`}>
+          <input 
+            type="checkbox" 
+            checked={data.notDisabled} 
+            onChange={handleNotDisabled} 
+            className="w-4 h-4 text-green-600 rounded cursor-pointer" 
+          />
+          <span className={`text-sm font-medium ${data.notDisabled ? 'text-green-800' : 'text-gray-800'}`}>
+            Saya Bukan Penyandang Disabilitas
+          </span>
+        </label>
+      </div>
+
+      {/* AREA RAGAM DISABILITAS (Redup jika opsi "Bukan Disabilitas" dicentang) */}
+      <div className={`transition-opacity duration-200 ${isDisabledAreaDisabled ? 'opacity-40 pointer-events-none grayscale' : ''}`}>
+        <p className="text-xs text-gray-500 mb-2 font-medium">Jika Anda penyandang disabilitas, mohon pilih ragam berikut (bisa lebih dari satu):</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+          {DISABILITY_OPTIONS.map(opt => (
+            <label key={opt} className="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" checked={data.disabilities.includes(opt)} onChange={() => handleCheck(opt)} className="mt-1 text-blue-600 rounded" />
+              <span className="text-sm text-gray-700 leading-tight">{opt}</span>
+            </label>
+          ))}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center mb-3">
+          <label className="flex items-center gap-2 cursor-pointer whitespace-nowrap">
+            <input type="checkbox" checked={data.disabilityOther !== ''} onChange={(e) => {
+              onChange({...data, disabilityOther: e.target.checked ? ' ' : '', notDisabled: false, declineDisabilityInfo: false})
+            }} className="text-blue-600 rounded" />
+            <span className="text-sm text-gray-700">Lainnya:</span>
+          </label>
+          <input 
+            type="text" value={data.disabilityOther.trim()} onChange={e => onChange({...data, disabilityOther: e.target.value})}
+            disabled={data.disabilityOther === ''}
+            placeholder="Sebutkan..."
+            className="flex-1 w-full sm:w-auto p-1.5 text-sm border border-gray-300 rounded disabled:bg-gray-100 outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+      </div>
+
+      {/* OPSI MENOLAK MENYEBUTKAN (Redup jika "Bukan Disabilitas" dicentang) */}
+      <div className={`border-t pt-3 mt-1 transition-opacity duration-200 ${data.notDisabled ? 'opacity-40 pointer-events-none' : ''}`}>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={data.declineDisabilityInfo} onChange={handleDecline} className="text-red-500 rounded" />
+          <span className="text-sm font-medium text-gray-700">Tidak bersedia menyebutkan ragam disabilitas</span>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// VIEW: PARTICIPANT LIST
+// ==========================================
+function ParticipantListView({ meeting, participants, onSignClick, onSelfRegisterClick }) {
+  const formattedDate = new Date(meeting.date).toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-500">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 md:p-6 relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-2 h-full bg-blue-500"></div>
+        <h2 className="text-xl font-bold text-gray-900 mb-4">{meeting.title}</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-600">
+          <div className="flex items-center gap-2"><Calendar className="text-blue-500" size={18} /><span className="font-medium">{formattedDate}</span></div>
+          <div className="flex items-center gap-2"><MapPin className="text-blue-500" size={18} /><span>{meeting.location}</span></div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="p-4 bg-gray-50 border-b flex flex-wrap gap-4 justify-between items-center">
+          <h3 className="font-semibold text-gray-800 flex items-center gap-2"><Users size={18} /> Daftar Hadir Peserta</h3>
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-medium bg-blue-100 text-blue-800 px-3 py-1.5 rounded-full">{participants.filter(p => p.signature).length} / {participants.length} Hadir</span>
+            {meeting.allowManualEntry && (
+              <button onClick={onSelfRegisterClick} className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-sm px-3 py-1.5 rounded-md shadow-sm transition">
+                <UserPlus size={16} /> Isi Kehadiran
+              </button>
+            )}
+          </div>
+        </div>
+        
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm whitespace-nowrap">
+            <thead className="bg-gray-50 text-gray-600 border-b">
+              <tr>
+                <th className="px-4 py-3 font-semibold text-center w-12">No.</th>
+                <th className="px-4 py-3 font-semibold">Nama Peserta</th>
+                <th className="px-4 py-3 font-semibold text-center hidden md:table-cell">L/P</th>
+                <th className="px-4 py-3 font-semibold hidden sm:table-cell">Institusi</th>
+                <th className="px-4 py-3 font-semibold text-center w-36">Tanda Tangan</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {participants.length === 0 ? (
+                <tr><td colSpan="5" className="px-4 py-12 text-center text-gray-500">Belum ada peserta.</td></tr>
+              ) : (
+                participants.map((p, index) => (
+                  <tr key={p.id} className="hover:bg-blue-50/30 transition-colors">
+                    <td className="px-4 py-3 text-center text-gray-500">{index + 1}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900">
+                      {p.name}
+                      <div className="block sm:hidden text-xs text-gray-500 font-normal mt-0.5">{p.institution}</div>
+                      
+                      {/* Indikator Data Disabilitas di HP */}
+                      {p.notDisabled ? (
+                        <div className="text-[10px] text-green-600 mt-1 flex items-center gap-1"><CheckSquare size={10}/> Bukan Disabilitas</div>
+                      ) : (p.disabilities?.length > 0 || p.disabilityOther || p.declineDisabilityInfo) ? (
+                         <div className="text-[10px] text-blue-600 mt-1 flex items-center gap-1"><CheckSquare size={10}/> Data Disabilitas Terisi</div>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-3 text-center hidden md:table-cell">{p.gender}</td>
+                    <td className="px-4 py-3 hidden sm:table-cell">{p.institution}</td>
+                    <td className="px-4 py-2 text-center">
+                      {p.signature ? (
+                        <img src={p.signature} alt={`TTD ${p.name}`} className="h-10 object-contain mx-auto" />
+                      ) : (
+                        <button onClick={() => onSignClick(p)} className="inline-flex items-center justify-center gap-1.5 w-full py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-md shadow-sm transition-colors">
+                          <PenTool size={14} /> TTD
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// VIEW: SELF REGISTER
+// ==========================================
+function SelfRegisterView({ onSubmit, onCancel }) {
+  const [formData, setFormData] = useState({
+    name: '', gender: 'L', institution: '', role: '', phone: '',
+    disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false
+  });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if(formData.name.trim()) onSubmit(formData);
+  };
+
+  return (
+    <div className="max-w-lg mx-auto bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden animate-in zoom-in-95 duration-300 mt-8">
+      <div className="bg-blue-600 p-4 text-white text-center">
+        <h3 className="font-bold text-lg">Isi Data Kehadiran</h3>
+      </div>
+      <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Nama Lengkap *</label>
+          <input type="text" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Masukkan nama Anda"/>
+        </div>
+        <div className="flex gap-4">
+          <div className="w-1/3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">L/P</label>
+            <select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})} className="w-full p-2.5 border border-gray-300 rounded-lg outline-none bg-white">
+              <option value="L">L</option><option value="P">P</option>
+            </select>
+          </div>
+          <div className="w-2/3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">No. HP</label>
+            <input type="tel" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="08..."/>
+          </div>
+        </div>
+        <div className="flex gap-4">
+          <div className="w-1/2">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Institusi/Instansi</label>
+            <input type="text" value={formData.institution} onChange={e => setFormData({...formData, institution: e.target.value})} className="w-full p-2.5 border border-gray-300 rounded-lg outline-none" />
+          </div>
+          <div className="w-1/2">
+             <label className="block text-sm font-medium text-gray-700 mb-1">Jabatan</label>
+            <input type="text" value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})} className="w-full p-2.5 border border-gray-300 rounded-lg outline-none" />
+          </div>
+        </div>
+
+        {/* SECTION DISABILITAS */}
+        <DisabilityFormSection data={formData} onChange={setFormData} />
+
+        <div className="pt-4 flex gap-3 sticky bottom-0 bg-white pb-2 mt-4">
+          <button type="button" onClick={onCancel} className="flex-1 py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg transition">Batal</button>
+          <button type="submit" className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition shadow-sm flex justify-center items-center gap-2">Lanjut TTD <PenTool size={16} /></button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ==========================================
+// VIEW: SIGNATURE PAD
+// ==========================================
+function SignatureView({ participant, onSave, onCancel, showAlert }) {
+  const canvasRef = useRef(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [hasDrawn, setHasDrawn] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const setupCanvas = () => {
+      const parent = canvas.parentElement;
+      canvas.width = parent.clientWidth;
+      canvas.height = 250;
+      const ctx = canvas.getContext('2d');
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#0f172a';
+    };
+    setupCanvas();
+    // Sesuaikan ulang kanvas saat layar HP diputar (portrait/landscape) atau ukuran jendela berubah
+    window.addEventListener('resize', setupCanvas);
+    window.addEventListener('orientationchange', setupCanvas);
+    return () => {
+      window.removeEventListener('resize', setupCanvas);
+      window.removeEventListener('orientationchange', setupCanvas);
+    };
+  }, []);
+
+  const startDrawing = (e) => {
+    e.preventDefault(); // Cegah layar ikut ter-scroll saat mulai menyentuh kanvas di HP
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const { offsetX, offsetY } = getCoordinates(e, canvas);
+    ctx.beginPath();
+    ctx.moveTo(offsetX, offsetY);
+    setIsDrawing(true);
+  };
+  const draw = (e) => {
+    if (!isDrawing) return;
+    e.preventDefault(); 
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const { offsetX, offsetY } = getCoordinates(e, canvas);
+    ctx.lineTo(offsetX, offsetY);
+    ctx.stroke();
+    setHasDrawn(true);
+  };
+  const stopDrawing = () => setIsDrawing(false);
+
+  const getCoordinates = (e, canvas) => {
+    if (e.touches && e.touches.length > 0) {
+      const rect = canvas.getBoundingClientRect();
+      return { offsetX: e.touches[0].clientX - rect.left, offsetY: e.touches[0].clientY - rect.top };
+    }
+    return { offsetX: e.nativeEvent.offsetX, offsetY: e.nativeEvent.offsetY };
+  };
+
+  const handleClear = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setHasDrawn(false);
+  };
+
+  const handleSave = () => {
+    if (!hasDrawn) return showAlert('Silakan coret/tanda tangan terlebih dahulu pada area yang disediakan.');
+    onSave(canvasRef.current.toDataURL('image/png'));
+  };
+
+  return (
+    <div className="max-w-xl mx-auto bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden animate-in zoom-in-95 duration-300 mt-4">
+      <div className="p-4 bg-gray-50 border-b flex justify-between items-center">
+        <h3 className="font-bold text-gray-800">Tanda Tangan Digital</h3>
+        <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 p-1 bg-white rounded-full shadow-sm border"><X size={18} /></button>
+      </div>
+      <div className="p-6 space-y-4">
+        <div className="text-center mb-2">
+          <p className="text-sm text-gray-500">Absen untuk:</p>
+          <p className="text-xl font-bold text-gray-900">{participant.name}</p>
+        </div>
+        <div className="border-2 border-dashed border-blue-200 rounded-lg bg-blue-50/30 relative overflow-hidden">
+          <canvas
+            ref={canvasRef}
+            onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={stopDrawing} onMouseLeave={stopDrawing}
+            onTouchStart={startDrawing} onTouchMove={draw} onTouchEnd={stopDrawing}
+            className="w-full touch-none cursor-crosshair" style={{ touchAction: 'none' }}
+          />
+          {!hasDrawn && (
+            <div className="absolute inset-0 pointer-events-none flex items-center justify-center text-gray-400 opacity-60">
+              <span className="text-lg font-medium tracking-wide">Goreskan Tanda Tangan Disini</span>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-3 pt-4">
+          <button onClick={handleClear} className="flex-1 py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-lg transition">Ulangi</button>
+          <button onClick={handleSave} className={`flex-1 py-3 px-4 font-semibold rounded-lg transition text-white shadow-md flex justify-center items-center gap-2 ${hasDrawn ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-300 cursor-not-allowed'}`}>
+            <CheckCircle size={18} /> Simpan & Hadir
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// VIEW: THANK YOU
+// ==========================================
+function ThankYouView({ participant }) {
+  return (
+    <div className="max-w-md mx-auto mt-16 bg-white rounded-2xl shadow-lg border border-gray-100 p-10 text-center animate-in slide-in-from-bottom-8 duration-500">
+      <div className="w-24 h-24 bg-green-100 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner"><CheckCircle size={50} /></div>
+      <h2 className="text-3xl font-extrabold text-gray-800 mb-3">Terima Kasih!</h2>
+      <p className="text-gray-600 mb-8 text-lg">Kehadiran <strong>{participant?.name}</strong> tersimpan.</p>
+    </div>
+  );
+}
+
+// ==========================================
+// VIEW: ADMIN PORTAL
+// ==========================================
+function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHeader, setPdfHeader, showConfirm, setLogoError }) {
+  const [activeTab, setActiveTab] = useState('settings'); 
+  const [newParticipant, setNewParticipant] = useState({
+    name: '', gender: 'L', institution: '', role: '', phone: '',
+    disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false
+  });
+
+  const handleMeetingChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setMeeting(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+  };
+
+  const handleAddParticipant = (e) => {
+    e.preventDefault();
+    if (!newParticipant.name.trim()) return;
+    setParticipants(prev => [...prev, { ...newParticipant, id: Date.now(), signature: null }]);
+    setNewParticipant({ name: '', gender: 'L', institution: '', role: '', phone: '', disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false });
+  };
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-300">
+      <div className="bg-gradient-to-r from-gray-800 to-gray-900 rounded-xl p-6 text-white shadow-md flex justify-between items-center">
+        <div><h2 className="text-2xl font-bold flex items-center gap-2"><Shield className="text-blue-400" /> Portal Admin</h2></div>
+      </div>
+
+      <div className="flex border-b border-gray-200 overflow-x-auto whitespace-nowrap">
+        <button onClick={() => setActiveTab('settings')} className={`px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === 'settings' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Pengaturan & Cetak</button>
+        <button onClick={() => setActiveTab('participants')} className={`px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === 'participants' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Manajemen Data Peserta</button>
+      </div>
+
+      {activeTab === 'settings' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+            <h3 className="font-bold text-gray-800 border-b pb-2">Detail Kegiatan</h3>
+            <textarea name="title" value={meeting.title} onChange={handleMeetingChange} rows="3" className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" />
+            <input type="date" name="date" value={meeting.date} onChange={handleMeetingChange} className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"/>
+            <input type="text" name="location" value={meeting.location} onChange={handleMeetingChange} className="w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"/>
+            <label className="flex items-start gap-3 cursor-pointer p-3 mt-2 bg-blue-50 rounded-lg border border-blue-100">
+              <input type="checkbox" name="allowManualEntry" checked={meeting.allowManualEntry} onChange={handleMeetingChange} className="w-4 h-4 mt-0.5 text-blue-600 rounded"/>
+              <div><span className="text-sm font-bold text-blue-900 block">Izinkan Isi Mandiri</span></div>
+            </label>
+          </div>
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+            <h3 className="font-bold text-gray-800 border-b pb-2 flex items-center gap-2"><ImageIcon size={18}/> Logo & Judul Cetak</h3>
+            
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Upload Logo (AKSI / Instansi)</label>
+              <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files[0]; if(f){ const r = new FileReader(); r.onloadend = () => { setPdfHeader(prev => ({...prev, logo: r.result})); setLogoError(false); }; r.readAsDataURL(f); } }} className="w-full text-sm p-2 border rounded-lg bg-gray-50" />
+              {pdfHeader.logo && (
+                <div className="mt-2 text-xs text-green-600 flex items-center gap-1"><CheckCircle size={14}/> Logo berhasil dipasang</div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Judul Dokumen</label>
+              <textarea value={pdfHeader.text} onChange={(e) => setPdfHeader(prev => ({...prev, text: e.target.value}))} rows="2" className="w-full text-sm p-2.5 border rounded-lg bg-gray-50" />
+            </div>
+
+            <button onClick={() => window.print()} className="w-full flex justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 rounded-lg mt-4"><Printer size={18} /> Cetak PDF (Landscape)</button>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'participants' && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="md:col-span-1 bg-white p-5 rounded-xl border border-gray-200 shadow-sm max-h-[80vh] overflow-y-auto">
+            <h3 className="font-bold text-gray-800 mb-4 border-b pb-2">Tambah Peserta</h3>
+            <form onSubmit={handleAddParticipant} className="space-y-3">
+              <input type="text" required value={newParticipant.name} onChange={e => setNewParticipant({...newParticipant, name: e.target.value})} className="w-full text-sm p-2 border rounded" placeholder="Nama *" />
+              <div className="flex gap-2">
+                <select value={newParticipant.gender} onChange={e => setNewParticipant({...newParticipant, gender: e.target.value})} className="w-1/3 text-sm p-2 border rounded"><option value="L">L</option><option value="P">P</option></select>
+                <input type="tel" value={newParticipant.phone} onChange={e => setNewParticipant({...newParticipant, phone: e.target.value})} className="w-2/3 text-sm p-2 border rounded" placeholder="No HP" />
+              </div>
+              <input type="text" value={newParticipant.institution} onChange={e => setNewParticipant({...newParticipant, institution: e.target.value})} className="w-full text-sm p-2 border rounded" placeholder="Institusi" />
+              <input type="text" value={newParticipant.role} onChange={e => setNewParticipant({...newParticipant, role: e.target.value})} className="w-full text-sm p-2 border rounded" placeholder="Jabatan" />
+              
+              <div className="mt-4 pt-4 border-t">
+                 <DisabilityFormSection data={newParticipant} onChange={setNewParticipant} />
+              </div>
+
+              <button type="submit" className="w-full flex justify-center gap-2 bg-gray-800 hover:bg-black text-white text-sm font-medium py-2 px-4 rounded mt-2">
+                <Plus size={16} /> Tambah Data
+              </button>
+            </form>
+          </div>
+
+          <div className="md:col-span-2 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden flex flex-col h-[80vh]">
+            <div className="p-4 border-b flex justify-between bg-gray-50">
+              <h3 className="font-bold text-gray-800">Database Kehadiran</h3>
+              <div className="flex gap-2">
+                 <button onClick={() => showConfirm('Reset semua TTD?', () => setParticipants(p => p.map(x => ({...x, signature: null}))))} className="text-xs text-red-600 border px-2 py-1 rounded hover:bg-red-50">Reset TTD</button>
+                 <button onClick={() => window.print()} className="text-xs bg-indigo-600 text-white px-3 py-1 rounded">Cetak PDF</button>
+              </div>
+            </div>
+            <div className="overflow-auto flex-1 p-0">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-gray-100 text-gray-700 sticky top-0 border-b">
+                  <tr><th className="px-4 py-2">Nama</th><th className="px-4 py-2">Info Disabilitas</th><th className="px-4 py-2 text-center">TTD</th><th className="px-4 py-2 text-center">Hapus</th></tr>
+                </thead>
+                <tbody className="divide-y">
+                  {participants.map(p => (
+                    <tr key={p.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-2">
+                        <span className="font-medium">{p.name}</span>
+                        <div className="text-xs text-gray-500">{p.institution}</div>
+                      </td>
+                      <td className="px-4 py-2 text-xs">
+                        {p.notDisabled ? <span className="inline-block bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Bukan Disabilitas</span> 
+                         : p.declineDisabilityInfo ? <span className="text-red-500">Menolak sebut</span> 
+                         : p.disabilities.length > 0 || p.disabilityOther ? <span className="text-blue-600">Disabilitas ({p.disabilities.length + (p.disabilityOther?1:0)})</span>
+                         : <span className="text-gray-400">Belum diisi</span>}
+                      </td>
+                      <td className="px-4 py-2 text-center">{p.signature ? <span className="text-green-600 font-bold">✓</span> : '-'}</td>
+                      <td className="px-4 py-2 text-center"><button onClick={() => showConfirm('Hapus?', () => setParticipants(arr => arr.filter(x => x.id !== p.id)))} className="text-red-500"><Trash2 size={16}/></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==========================================
+// VIEW: PRINT TEMPLATE (PDF LAYOUT MIRRORING PHYSICAL FORM)
+// ==========================================
+function PrintTemplate({ meeting, participants, pdfHeader, logoError }) {
+  const formattedDate = new Date(meeting.date).toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+  // Hitung jumlah yang disabilitas (notDisabled === false && ada isian) 
+  const totalL = participants.filter(p => p.gender === 'L').length;
+  const totalP = participants.filter(p => p.gender === 'P').length;
+  const hasDisability = (p) => !p.notDisabled && (p.disabilities?.length > 0 || p.disabilityOther !== '');
+  const disL = participants.filter(p => p.gender === 'L' && hasDisability(p)).length;
+  const disP = participants.filter(p => p.gender === 'P' && hasDisability(p)).length;
+
+  const renderCheck = (label, isChecked) => (
+    <div className="flex items-start gap-1 text-[8px] leading-[1.1] mb-0.5 break-inside-avoid">
+      <div className={`w-2.5 h-2.5 mt-[1px] border border-black shrink-0 ${isChecked ? 'bg-black' : ''}`} style={isChecked ? { WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : {}}></div>
+      <span>{label}</span>
+    </div>
+  );
+
+  return (
+    <div className="w-full font-sans print-content text-black h-full flex flex-col pt-2">
+      <div className="flex justify-between items-start mb-4 w-full">
+        
+        {/* Kiri & Tengah: Logo dan Metadata */}
+        <div className="flex-1 pr-4 flex gap-6 items-start">
+          {pdfHeader.logo && !logoError && (
+            <img src={pdfHeader.logo} alt="Logo" className="w-[80px] h-[80px] object-contain shrink-0" style={{printColorAdjust: 'exact'}} />
+          )}
+          
+          <div>
+            <div className="whitespace-pre-wrap font-extrabold text-2xl tracking-wide mb-4 mt-2">{pdfHeader.text}</div>
+            <table className="text-[11px] font-medium">
+              <tbody>
+                <tr><td className="pr-4 py-0.5 align-top whitespace-nowrap">Nama Kegiatan/Workshop</td><td className="px-1 py-0.5 align-top">:</td><td className="py-0.5 font-bold uppercase">{meeting.title}</td></tr>
+                <tr><td className="pr-4 py-0.5 align-top whitespace-nowrap">Hari & Tanggal</td><td className="px-1 py-0.5 align-top">:</td><td className="py-0.5">{formattedDate}</td></tr>
+                <tr><td className="pr-4 py-0.5 align-top whitespace-nowrap">Lokasi Kegiatan</td><td className="px-1 py-0.5 align-top">:</td><td className="py-0.5">{meeting.location}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Kanan: Box Summary */}
+        <div className="w-64 shrink-0 mt-8">
+           <table className="w-full border-collapse border border-black text-[10px]">
+             <tbody>
+                <tr>
+                  <td className="border border-black p-1 font-bold bg-gray-200 w-1/2">Total Peserta</td>
+                  <td className="border border-black p-1 font-bold bg-gray-200 text-center w-1/2">ASOSIASI KEPALA SEKOLAH INDONESIA</td>
+                </tr>
+                <tr><td className="border border-black p-1">Laki-laki</td><td className="border border-black p-1 text-center font-bold">{totalL}</td></tr>
+                <tr><td className="border border-black p-1">Perempuan</td><td className="border border-black p-1 text-center font-bold">{totalP}</td></tr>
+                <tr><td className="border border-black p-1">Total</td><td className="border border-black p-1 text-center font-bold bg-gray-100">{totalL + totalP}</td></tr>
+                <tr><td colSpan="2" className="border border-black p-1 font-bold bg-gray-200">Total Disabilitas</td></tr>
+                <tr><td className="border border-black p-1">Laki-laki</td><td className="border border-black p-1 text-center font-bold">{disL}</td></tr>
+                <tr><td className="border border-black p-1">Perempuan</td><td className="border border-black p-1 text-center font-bold">{disP}</td></tr>
+                <tr><td className="border border-black p-1">Total</td><td className="border border-black p-1 text-center font-bold bg-gray-100">{disL + disP}</td></tr>
+             </tbody>
+           </table>
+        </div>
+      </div>
+
+      <div className="w-full flex-1">
+        <table className="w-full border-collapse border border-black text-[10px]">
+          <thead className="bg-gray-800 text-white text-[10px]">
+            <tr>
+              <th className="border border-gray-400 p-1.5 text-center w-[3%] font-bold">No.</th>
+              <th className="border border-gray-400 p-1.5 w-[12%] font-bold text-center">Nama Peserta</th>
+              <th className="border border-gray-400 p-1.5 text-center w-[4%] font-bold">L/P</th>
+              <th className="border border-gray-400 p-1.5 w-[11%] font-bold text-center">Institusi</th>
+              <th className="border border-gray-400 p-1.5 w-[10%] font-bold text-center">Jabatan</th>
+              <th className="border border-gray-400 p-1.5 w-[10%] font-bold text-center">Handphone</th>
+              <th className="border border-gray-400 p-1 w-[38%] font-bold text-center leading-tight">
+                Jika Anda Penyandang Disabilitas, Mohon berikan informasi Ragam Disabilitas di bawah ini: (bisa pilih lebih dari satu)
+              </th>
+              <th className="border border-gray-400 p-1.5 text-center w-[12%]" colSpan="2">Tanda Tangan</th>
+            </tr>
+          </thead>
+          <tbody className="text-black">
+            {participants.map((p, i) => (
+              <tr key={p.id}>
+                <td className="border border-black p-1 text-center align-middle bg-gray-100 font-bold">{i + 1}</td>
+                <td className="border border-black p-1.5 align-middle uppercase font-bold text-[11px]">{p.name}</td>
+                <td className="border border-black p-1 text-center align-middle">{p.gender}</td>
+                <td className="border border-black p-1.5 align-middle">{p.institution}</td>
+                <td className="border border-black p-1.5 align-middle">{p.role}</td>
+                <td className="border border-black p-1.5 align-middle text-center">{p.phone}</td>
+                
+                {/* KOLOM DISABILITAS KOMPLEKS */}
+                <td className="border border-black p-1 align-top bg-gray-50/30">
+                  {/* Jika "Bukan Disabilitas" dicentang, PDF tetap kosong saja seperti form aslinya */}
+                  {p.notDisabled ? (
+                    <div className="flex h-full items-center justify-center text-[10px] text-gray-500 italic">- (Bukan Disabilitas) -</div>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-1">
+                      <div>
+                        {renderCheck('Disabilitas Fisik', p.disabilities?.includes('Disabilitas Fisik'))}
+                        {renderCheck('Disabilitas Netra', p.disabilities?.includes('Disabilitas Netra'))}
+                        {renderCheck('Disabilitas Rungu dan/Wicara', p.disabilities?.includes('Disabilitas Rungu dan/Wicara'))}
+                      </div>
+                      <div>
+                        {renderCheck('Disabilitas Intelektual', p.disabilities?.includes('Disabilitas Intelektual'))}
+                        {renderCheck('Disabilitas Mental (Psikososial)', p.disabilities?.includes('Disabilitas Mental (Psikososial)'))}
+                        {renderCheck('Disabilitas Mental (Perkembangan)', p.disabilities?.includes('Disabilitas Mental (Perkembangan)'))}
+                      </div>
+                      <div>
+                        <div className="flex items-start gap-1 text-[8px] leading-[1.1] mb-0.5">
+                          <div className={`w-2.5 h-2.5 mt-[1px] border border-black shrink-0 ${p.disabilityOther ? 'bg-black' : ''}`} style={p.disabilityOther ? { WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : {}}></div>
+                          <span className="truncate">Lainnya: {p.disabilityOther ? <u className="font-bold">{p.disabilityOther}</u> : '......................'}</span>
+                        </div>
+                        {renderCheck('Tidak bersedia menyebutkan', p.declineDisabilityInfo)}
+                      </div>
+                    </div>
+                  )}
+                </td>
+                
+                <td className={`border border-black p-1 align-middle relative h-[50px] w-[6%] ${i % 2 === 0 ? '' : 'border-r-0'}`}>
+                  {i % 2 === 0 && (
+                    <div className="w-full h-full relative flex items-center justify-center">
+                      <span className="absolute top-0 left-0.5 text-[9px] text-gray-500 font-bold">{i + 1}.</span>
+                      {p.signature && <img src={p.signature} alt="TTD" className="max-h-full max-w-full object-contain" style={{printColorAdjust: 'exact'}} />}
+                    </div>
+                  )}
+                </td>
+                <td className={`border border-black p-1 align-middle relative h-[50px] w-[6%] ${i % 2 !== 0 ? '' : 'border-l-0'}`}>
+                   {i % 2 !== 0 && (
+                    <div className="w-full h-full relative flex items-center justify-center">
+                      <span className="absolute top-0 left-0.5 text-[9px] text-gray-500 font-bold">{i + 1}.</span>
+                      {p.signature && <img src={p.signature} alt="TTD" className="max-h-full max-w-full object-contain" style={{printColorAdjust: 'exact'}} />}
+                    </div>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
