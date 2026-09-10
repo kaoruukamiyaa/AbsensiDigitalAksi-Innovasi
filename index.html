@@ -264,6 +264,24 @@ async function fetchAllDataFromSheet(date) {
         return null;
     }
 }
+// Ambil daftar seluruh kegiatan (tanggal + judul) yang pernah tersimpan, untuk fitur
+// "Riwayat Kegiatan" di admin dan daftar pilihan saat memindahkan peserta.
+async function fetchEventsList() {
+    if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL'))
+        return [];
+    try {
+        const url = `${GOOGLE_SHEET_WEBHOOK_URL}?action=listEvents`;
+        const res = await fetch(url);
+        if (!res.ok)
+            return [];
+        const data = await res.json();
+        return Array.isArray(data && data.events) ? data.events : [];
+    }
+    catch (err) {
+        console.error('Gagal mengambil daftar kegiatan (mungkin Apps Script belum di-update ke v7):', err);
+        return [];
+    }
+}
 // ==========================================
 // PENYIMPANAN DATA LOKAL (per tanggal kegiatan)
 // Setiap kegiatan/tanggal punya data sendiri (judul, lokasi, header PDF, peserta),
@@ -878,6 +896,44 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
         name: '', gender: 'L', institution: '', role: '', phone: '',
         disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false
     });
+    // Daftar seluruh kegiatan (tanggal + judul) yang pernah tersimpan — dipakai untuk
+    // tab "Riwayat Kegiatan" dan untuk pilihan tujuan saat memindahkan peserta.
+    const [eventsList, setEventsList] = useState([]);
+    const [loadingEvents, setLoadingEvents] = useState(false);
+    const todayStr = new Date().toISOString().split('T')[0];
+    const isViewingToday = meeting.date === todayStr;
+    const loadEventsList = () => {
+        setLoadingEvents(true);
+        fetchEventsList().then(list => { setEventsList(list); setLoadingEvents(false); });
+    };
+    useEffect(() => { loadEventsList(); }, []);
+    // Pindah tampilan admin (dan halaman utama) ke kegiatan/tanggal lain — dipakai
+    // baik oleh tab "Riwayat Kegiatan" maupun tombol "Kembali ke Hari Ini".
+    const switchToDate = async (date) => {
+        const remote = await fetchAllDataFromSheet(date);
+        let newMeeting, newParticipants, newPdfHeader;
+        const cached = loadSavedDataForDate(date);
+        if (remote && remote.settings) {
+            const s = remote.settings;
+            newMeeting = { title: '', date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true, ...s,
+                time: normalizeTimeValue(s.time), endTime: normalizeTimeValue(s.endTime), date: normalizeDateValue(s.date) || date };
+            newParticipants = remote.participants;
+            newPdfHeader = (cached && cached.pdfHeader) || { text: 'DAFTAR HADIR', logo: '' };
+        } else if (cached) {
+            newMeeting = cached.meeting;
+            newParticipants = Array.isArray(cached.participants) ? cached.participants : [];
+            newPdfHeader = cached.pdfHeader || { text: 'DAFTAR HADIR', logo: '' };
+        } else {
+            newMeeting = { title: '', date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
+            newParticipants = [];
+            newPdfHeader = { text: 'DAFTAR HADIR', logo: '' };
+        }
+        setMeeting(newMeeting);
+        setParticipants(newParticipants);
+        setPdfHeader(newPdfHeader);
+        saveDataForDate(date, { meeting: newMeeting, pdfHeader: newPdfHeader, participants: newParticipants });
+        setActiveTab('settings');
+    };
     const handleMeetingChange = (e) => {
         const { name, value, type, checked } = e.target;
         setMeeting(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
@@ -897,19 +953,22 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             deleteParticipantFromSheet(meeting, p.id);
         });
     };
-    // Pindahkan peserta ke tanggal kegiatan lain — misalnya salah pilih tanggal saat
+    // Pindahkan peserta ke kegiatan/tanggal lain — misalnya salah pilih tanggal saat
     // isi absen. Data lain (nama, institusi, TTD, dst) tetap sama, cuma tanggalnya
-    // yang berubah. Peserta akan hilang dari daftar tanggal ini dan muncul di daftar
-    // tanggal tujuan begitu halaman untuk tanggal itu dibuka.
-    const handleMoveParticipant = (p) => {
-        const newDate = window.prompt(`Pindahkan "${p.name}" ke tanggal kegiatan berapa?\n(format: YYYY-MM-DD, contoh: 2026-09-15)`, meeting.date);
-        if (!newDate) return;
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
-            window.alert('Format tanggal tidak valid. Gunakan format YYYY-MM-DD, contoh: 2026-09-15');
-            return;
-        }
-        if (newDate === meeting.date) return;
-        showConfirm(`Pindahkan data "${p.name}" dari tanggal ${meeting.date} ke ${newDate}?`, () => {
+    // yang berubah. Peserta akan hilang dari daftar kegiatan ini dan muncul di daftar
+    // kegiatan tujuan begitu kegiatan itu dibuka.
+    const [movingParticipantId, setMovingParticipantId] = useState(null);
+    const [moveTargetDate, setMoveTargetDate] = useState('');
+    const startMoveParticipant = (p) => {
+        setMovingParticipantId(p.id);
+        const firstOther = eventsList.find(ev => ev.date !== meeting.date);
+        setMoveTargetDate(firstOther ? firstOther.date : '');
+    };
+    const confirmMoveParticipant = (p) => {
+        const newDate = moveTargetDate;
+        if (!newDate || newDate === meeting.date) { setMovingParticipantId(null); return; }
+        const targetEvent = eventsList.find(ev => ev.date === newDate);
+        showConfirm(`Pindahkan data "${p.name}" ke kegiatan "${(targetEvent && targetEvent.title) || newDate}" (${newDate})?`, () => {
             setParticipants(arr => arr.filter(x => x.id !== p.id));
             moveParticipantDateInSheet(p.id, newDate);
             // Simpan juga ke cache lokal (localStorage) untuk tanggal tujuan, supaya
@@ -918,11 +977,12 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             const targetSaved = loadSavedDataForDate(newDate);
             const targetParticipants = (targetSaved && Array.isArray(targetSaved.participants)) ? targetSaved.participants : [];
             saveDataForDate(newDate, {
-                meeting: (targetSaved && targetSaved.meeting) || { title: '', date: newDate, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true },
+                meeting: (targetSaved && targetSaved.meeting) || { title: (targetEvent && targetEvent.title) || '', date: newDate, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true },
                 pdfHeader: (targetSaved && targetSaved.pdfHeader) || { text: 'DAFTAR HADIR', logo: '' },
                 participants: [...targetParticipants, p]
             });
         });
+        setMovingParticipantId(null);
     };
     const handleResetSignatures = () => {
         showConfirm('Reset semua TTD?', () => {
@@ -931,6 +991,33 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             toReset.forEach(x => syncParticipantToSheet(meeting, x, { clearSignature: true }));
         });
     };
+    // Konten tab "Riwayat Kegiatan" dihitung terpisah dulu (bukan nested ternary
+    // langsung di JSX) supaya strukturnya lebih mudah dibaca dan tidak salah kurung.
+    let historyBody;
+    if (loadingEvents) {
+        historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Memuat daftar kegiatan...");
+    } else if (eventsList.length === 0) {
+        historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Belum ada riwayat kegiatan tersimpan, atau Apps Script belum di-update ke versi yang mendukung ini (v7).");
+    } else {
+        const eventRows = eventsList.map(function(ev) {
+            const isCurrent = ev.date === meeting.date;
+            return React.createElement("div", { key: ev.date, className: "flex items-center justify-between py-3 gap-3" },
+                React.createElement("div", null,
+                    React.createElement("p", { className: "font-medium text-gray-800" }, ev.title),
+                    React.createElement("p", { className: "text-xs text-gray-500" }, ev.date + (ev.date === todayStr ? ' (Hari ini)' : ''))),
+                React.createElement("button", {
+                    onClick: () => switchToDate(ev.date),
+                    disabled: isCurrent,
+                    className: `text-xs px-3 py-1.5 rounded-md font-medium shrink-0 ${isCurrent ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}`
+                }, isCurrent ? 'Sedang Dilihat' : 'Lihat'));
+        });
+        historyBody = React.createElement("div", { className: "divide-y" }, eventRows);
+    }
+    const historyTabContent = React.createElement("div", { className: "bg-white rounded-xl border border-gray-200 shadow-sm p-5" },
+        React.createElement("div", { className: "flex justify-between items-center mb-4 border-b pb-2" },
+            React.createElement("h3", { className: "font-bold text-gray-800" }, "Riwayat Seluruh Kegiatan"),
+            React.createElement("button", { onClick: loadEventsList, className: "text-xs text-blue-600 hover:underline" }, "Muat Ulang")),
+        historyBody);
     return (React.createElement("div", { className: "space-y-6 animate-in fade-in duration-300" },
         React.createElement("div", { className: "bg-gradient-to-r from-gray-800 to-gray-900 rounded-xl p-6 text-white shadow-md flex justify-between items-center" },
             React.createElement("div", null,
@@ -939,7 +1026,14 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                     " Portal Admin"))),
         React.createElement("div", { className: "flex border-b border-gray-200 overflow-x-auto whitespace-nowrap" },
             React.createElement("button", { onClick: () => setActiveTab('settings'), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === 'settings' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, "Pengaturan & Cetak"),
-            React.createElement("button", { onClick: () => setActiveTab('participants'), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === 'participants' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, "Manajemen Data Peserta")),
+            React.createElement("button", { onClick: () => setActiveTab('participants'), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === 'participants' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, "Manajemen Data Peserta"),
+            React.createElement("button", { onClick: () => setActiveTab('history'), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === 'history' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, "Riwayat Kegiatan")),
+        !isViewingToday && (React.createElement("div", { className: "bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-2.5 rounded-lg flex flex-wrap items-center justify-between gap-2" },
+            React.createElement("span", null,
+                "Sedang menampilkan kegiatan tanggal ",
+                React.createElement("strong", null, meeting.date),
+                " (bukan hari ini)."),
+            React.createElement("button", { onClick: () => switchToDate(todayStr), className: "text-sm font-semibold underline hover:no-underline" }, "Kembali ke Hari Ini"))),
         activeTab === 'settings' && (React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-6" },
             React.createElement("div", { className: "bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4" },
                 React.createElement("h3", { className: "font-bold text-gray-800 border-b pb-2" }, "Detail Kegiatan"),
@@ -1036,12 +1130,20 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                                         ")")
                                         : React.createElement("span", { className: "text-gray-400" }, "Belum diisi")),
                             React.createElement("td", { className: "px-4 py-2 text-center" }, p.signature ? React.createElement("span", { className: "text-green-600 font-bold" }, "\u2713") : '-'),
-                            React.createElement("td", { className: "px-4 py-2 text-center" },
-                                React.createElement("button", { onClick: () => handleMoveParticipant(p), title: "Pindahkan ke tanggal kegiatan lain", className: "text-blue-500 hover:text-blue-700" },
-                                    React.createElement(Calendar, { size: 16 }))),
+                            React.createElement("td", { className: "px-4 py-2 text-center min-w-[140px]" }, movingParticipantId === p.id ? (React.createElement("div", { className: "flex items-center gap-1" },
+                                React.createElement("select", { value: moveTargetDate, onChange: e => setMoveTargetDate(e.target.value), className: "text-xs border rounded p-1 flex-1" },
+                                    eventsList.filter(ev => ev.date !== meeting.date).length === 0
+                                        ? React.createElement("option", { value: "" }, "Tidak ada kegiatan lain")
+                                        : eventsList.filter(ev => ev.date !== meeting.date).map(ev => React.createElement("option", { key: ev.date, value: ev.date }, `${ev.date} — ${ev.title}`))),
+                                React.createElement("button", { onClick: () => confirmMoveParticipant(p), title: "Konfirmasi pindah", className: "text-green-600 hover:text-green-800" },
+                                    React.createElement(CheckCircle, { size: 16 })),
+                                React.createElement("button", { onClick: () => setMovingParticipantId(null), title: "Batal", className: "text-gray-400 hover:text-gray-600" },
+                                    React.createElement(X, { size: 14 })))) : (React.createElement("button", { onClick: () => startMoveParticipant(p), title: "Pindahkan ke kegiatan lain", className: "text-blue-500 hover:text-blue-700" },
+                                React.createElement(Calendar, { size: 16 })))),
                             React.createElement("td", { className: "px-4 py-2 text-center" },
                                 React.createElement("button", { onClick: () => handleDeleteParticipant(p), className: "text-red-500" },
-                                    React.createElement(Trash2, { size: 16 }))))))))))))));
+                                    React.createElement(Trash2, { size: 16 })))))))))))),
+        activeTab === 'history' && historyTabContent));
 }
 // ==========================================
 // VIEW: PRINT TEMPLATE (PDF LAYOUT MIRRORING PHYSICAL FORM)
