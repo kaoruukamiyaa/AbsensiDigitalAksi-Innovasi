@@ -223,6 +223,26 @@ async function deleteParticipantFromSheet(meeting, participantId) {
         return false;
     }
 }
+// Pindahkan satu peserta ke tanggal kegiatan lain (mengubah kolom Tanggal di tab
+// "Peserta" saja, field lain seperti nama/institusi/TTD tetap sama). Perlu Apps
+// Script versi terbaru (action "moveParticipantDate").
+async function moveParticipantDateInSheet(participantId, newDate) {
+    if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL'))
+        return false;
+    try {
+        await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify({ action: 'moveParticipantDate', id: participantId, newDate: newDate }),
+        });
+        return true;
+    }
+    catch (err) {
+        console.error('Gagal memindahkan tanggal peserta di Google Sheets:', err);
+        return false;
+    }
+}
 // Ambil pengaturan kegiatan + seluruh daftar peserta untuk tanggal tertentu dari
 // spreadsheet sekaligus (satu request), dipakai saat halaman pertama dibuka supaya
 // semua perangkat menampilkan data yang sama persis.
@@ -877,6 +897,33 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             deleteParticipantFromSheet(meeting, p.id);
         });
     };
+    // Pindahkan peserta ke tanggal kegiatan lain — misalnya salah pilih tanggal saat
+    // isi absen. Data lain (nama, institusi, TTD, dst) tetap sama, cuma tanggalnya
+    // yang berubah. Peserta akan hilang dari daftar tanggal ini dan muncul di daftar
+    // tanggal tujuan begitu halaman untuk tanggal itu dibuka.
+    const handleMoveParticipant = (p) => {
+        const newDate = window.prompt(`Pindahkan "${p.name}" ke tanggal kegiatan berapa?\n(format: YYYY-MM-DD, contoh: 2026-09-15)`, meeting.date);
+        if (!newDate) return;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
+            window.alert('Format tanggal tidak valid. Gunakan format YYYY-MM-DD, contoh: 2026-09-15');
+            return;
+        }
+        if (newDate === meeting.date) return;
+        showConfirm(`Pindahkan data "${p.name}" dari tanggal ${meeting.date} ke ${newDate}?`, () => {
+            setParticipants(arr => arr.filter(x => x.id !== p.id));
+            moveParticipantDateInSheet(p.id, newDate);
+            // Simpan juga ke cache lokal (localStorage) untuk tanggal tujuan, supaya
+            // langsung terlihat kalau tanggal itu dibuka di perangkat yang sama —
+            // perangkat lain akan mengambilnya dari spreadsheet saat halaman dibuka.
+            const targetSaved = loadSavedDataForDate(newDate);
+            const targetParticipants = (targetSaved && Array.isArray(targetSaved.participants)) ? targetSaved.participants : [];
+            saveDataForDate(newDate, {
+                meeting: (targetSaved && targetSaved.meeting) || { title: '', date: newDate, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true },
+                pdfHeader: (targetSaved && targetSaved.pdfHeader) || { text: 'DAFTAR HADIR', logo: '' },
+                participants: [...targetParticipants, p]
+            });
+        });
+    };
     const handleResetSignatures = () => {
         showConfirm('Reset semua TTD?', () => {
             const toReset = participants.filter(x => x.signature);
@@ -975,6 +1022,7 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                                 React.createElement("th", { className: "px-4 py-2" }, "Nama"),
                                 React.createElement("th", { className: "px-4 py-2" }, "Info Disabilitas"),
                                 React.createElement("th", { className: "px-4 py-2 text-center" }, "TTD"),
+                                React.createElement("th", { className: "px-4 py-2 text-center" }, "Pindah Tgl"),
                                 React.createElement("th", { className: "px-4 py-2 text-center" }, "Hapus"))),
                         React.createElement("tbody", { className: "divide-y" }, participants.map(p => (React.createElement("tr", { key: p.id, className: "hover:bg-gray-50" },
                             React.createElement("td", { className: "px-4 py-2" },
@@ -988,6 +1036,9 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                                         ")")
                                         : React.createElement("span", { className: "text-gray-400" }, "Belum diisi")),
                             React.createElement("td", { className: "px-4 py-2 text-center" }, p.signature ? React.createElement("span", { className: "text-green-600 font-bold" }, "\u2713") : '-'),
+                            React.createElement("td", { className: "px-4 py-2 text-center" },
+                                React.createElement("button", { onClick: () => handleMoveParticipant(p), title: "Pindahkan ke tanggal kegiatan lain", className: "text-blue-500 hover:text-blue-700" },
+                                    React.createElement(Calendar, { size: 16 }))),
                             React.createElement("td", { className: "px-4 py-2 text-center" },
                                 React.createElement("button", { onClick: () => handleDeleteParticipant(p), className: "text-red-500" },
                                     React.createElement(Trash2, { size: 16 }))))))))))))));
