@@ -13,11 +13,6 @@
 <script>
 "use strict";
 const { useState, useRef, useEffect } = React;
-// ==========================================
-// IKON (pengganti lucide-react, versi SVG inline)
-// Dipakai karena versi ini jalan langsung di browser tanpa proses build (npm/vite),
-// jadi tidak bisa "import ... from 'lucide-react'" seperti versi Node/React biasa.
-// ==========================================
 function Icon({ size = 18, className = '', children }) {
     return (React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className: className }, children));
 }
@@ -84,7 +79,6 @@ const Wifi = (p) => React.createElement(Icon, { ...p },
     React.createElement("path", { d: "M1.42 9a16 16 0 0 1 21.16 0" }),
     React.createElement("path", { d: "M8.53 16.11a6 6 0 0 1 6.95 0" }),
     React.createElement("line", { x1: "12", y1: "20", x2: "12.01", y2: "20" }));
-// Konstanta untuk opsi disabilitas
 const DISABILITY_OPTIONS = [
     'Disabilitas Fisik',
     'Disabilitas Netra',
@@ -93,211 +87,131 @@ const DISABILITY_OPTIONS = [
     'Disabilitas Mental (Psikososial)',
     'Disabilitas Mental (Perkembangan)'
 ];
-// GANTI dengan URL Web App hasil deploy Google Apps Script (lihat panduan di bawah/terpisah).
-// Contoh: 'https://script.google.com/macros/s/AKfycb.../exec'
 const GOOGLE_SHEET_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwgE4SLXOjR1I5BDiH5Jt55Fy3rpgCgaCzAoLJIOJwt8mBr6ChljbDrs1BQb_pt4O-60A/exec';
-// Kirim data kehadiran ke Google Sheets lewat Apps Script Web App.
-// Pakai mode 'no-cors' karena Apps Script Web App tidak mengizinkan pembacaan response
-// dari domain lain, tapi permintaannya tetap sampai & tercatat di spreadsheet.
+function isWebhookReady() {
+    return GOOGLE_SHEET_WEBHOOK_URL && !GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL');
+}
+async function postToSheet(payload) {
+    await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(payload),
+    });
+}
 async function syncAttendanceToSheet(participant, meeting) {
-    if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL')) {
-        console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi — data tidak dikirim ke spreadsheet.');
-        return;
-    }
+    if (!isWebhookReady()) { console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi.'); return; }
     try {
-        await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'text/plain' }, // hindari CORS preflight yang sering diblokir Apps Script
-            body: JSON.stringify({
-                kegiatan: meeting.title,
-                tanggal: meeting.date,
-                lokasi: meeting.location,
-                nama: participant.name,
-                gender: participant.gender,
-                institusi: participant.institution,
-                jabatan: participant.role,
-                telepon: participant.phone,
-                disabilitas: participant.notDisabled
-                    ? 'Bukan Disabilitas'
-                    : (participant.declineDisabilityInfo
-                        ? 'Tidak bersedia menyebutkan'
-                        : [...(participant.disabilities || []), participant.disabilityOther].filter(Boolean).join(', ')),
-                waktuAbsen: new Date().toISOString(),
-            }),
+        await postToSheet({
+            kegiatan: meeting.title,
+            tanggal: meeting.date,
+            lokasi: meeting.location,
+            nama: participant.name,
+            gender: participant.gender,
+            institusi: participant.institution,
+            jabatan: participant.role,
+            telepon: participant.phone,
+            disabilitas: participant.notDisabled
+                ? 'Bukan Disabilitas'
+                : (participant.declineDisabilityInfo
+                    ? 'Tidak bersedia menyebutkan'
+                    : [...(participant.disabilities || []), participant.disabilityOther].filter(Boolean).join(', ')),
+            waktuAbsen: new Date().toISOString(),
         });
-    }
-    catch (err) {
-        console.error('Gagal mengirim data ke Google Sheets:', err);
-    }
+    } catch (err) { console.error('Gagal mengirim data ke Google Sheets:', err); }
 }
-// Kirim pengaturan kegiatan (judul, jam, mode, lokasi, dll) ke tab "Pengaturan" di
-// spreadsheet yang sama, dikelompokkan per tanggal — supaya semua perangkat yang
-// membuka halaman ini otomatis melihat data yang sama, tanpa perlu simpan manual
-// di tiap perangkat. Butuh Apps Script versi terbaru (lihat panduan terpisah).
 async function syncSettingsToSheet(meeting) {
-    if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL')) {
-        console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi — pengaturan tidak dikirim ke spreadsheet.');
-        return false;
-    }
+    if (!isWebhookReady()) { console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi.'); return false; }
     try {
-        await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'text/plain' },
-            body: JSON.stringify({
-                action: 'saveSettings',
-                date: meeting.date,
-                title: meeting.title,
-                time: meeting.time,
-                endTime: meeting.endTime,
-                mode: meeting.mode,
-                location: meeting.location,
-                allowManualEntry: meeting.allowManualEntry,
-            }),
+        await postToSheet({
+            action: 'saveSettings',
+            date: meeting.date,
+            title: meeting.title,
+            time: meeting.time,
+            endTime: meeting.endTime,
+            mode: meeting.mode,
+            location: meeting.location,
+            allowManualEntry: meeting.allowManualEntry,
         });
-        return true; // no-cors: kita tidak bisa baca respons, tapi permintaan sudah terkirim
-    }
-    catch (err) {
-        console.error('Gagal menyimpan pengaturan ke Google Sheets:', err);
-        return false;
-    }
+        return true;
+    } catch (err) { console.error('Gagal menyimpan pengaturan ke Google Sheets:', err); return false; }
 }
-// Kirim data satu peserta (identitas, disabilitas, tanda tangan) ke tab "Peserta" di
-// spreadsheet — di-upsert berdasarkan ID, jadi dipakai baik saat admin menambah peserta
-// (belum TTD) maupun saat peserta menandatangani (dengan TTD). Tanda tangan otomatis
-// di-upload ke Google Drive oleh Apps Script, spreadsheet hanya menyimpan link-nya.
 async function syncParticipantToSheet(meeting, participant, opts = {}) {
-    if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL')) {
-        console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi — data peserta tidak dikirim ke spreadsheet.');
-        return false;
-    }
+    if (!isWebhookReady()) { console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi.'); return false; }
     try {
-        await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'text/plain' },
-            body: JSON.stringify({
-                action: 'saveParticipant',
-                id: participant.id,
-                tanggal: meeting.date,
-                kegiatan: meeting.title,
-                lokasi: meeting.location,
-                nama: participant.name,
-                gender: participant.gender,
-                institusi: participant.institution,
-                jabatan: participant.role,
-                telepon: participant.phone,
-                notDisabled: participant.notDisabled,
-                disabilitas: (participant.disabilities || []).join(', '),
-                disabilitasLainnya: participant.disabilityOther || '',
-                tolakSebutkan: participant.declineDisabilityInfo,
-                // Kirim base64 TTD hanya kalau baru digambar (bukan URL Drive yang sudah tersimpan sebelumnya)
-                signature: (!opts.clearSignature && participant.signature && participant.signature.startsWith('data:')) ? participant.signature : '',
-                clearSignature: !!opts.clearSignature,
-                waktuAbsen: participant.signature ? new Date().toISOString() : '',
-            }),
+        await postToSheet({
+            action: 'saveParticipant',
+            id: participant.id,
+            tanggal: meeting.date,
+            kegiatan: meeting.title,
+            lokasi: meeting.location,
+            nama: participant.name,
+            gender: participant.gender,
+            institusi: participant.institution,
+            jabatan: participant.role,
+            telepon: participant.phone,
+            notDisabled: participant.notDisabled,
+            disabilitas: (participant.disabilities || []).join(', '),
+            disabilitasLainnya: participant.disabilityOther || '',
+            tolakSebutkan: participant.declineDisabilityInfo,
+            signature: (!opts.clearSignature && participant.signature && participant.signature.startsWith('data:')) ? participant.signature : '',
+            clearSignature: !!opts.clearSignature,
+            waktuAbsen: participant.signature ? new Date().toISOString() : '',
         });
         return true;
-    }
-    catch (err) {
-        console.error('Gagal menyimpan data peserta ke Google Sheets:', err);
-        return false;
-    }
+    } catch (err) { console.error('Gagal menyimpan data peserta ke Google Sheets:', err); return false; }
 }
-// Hapus satu baris peserta dari tab "Peserta" di spreadsheet.
 async function deleteParticipantFromSheet(meeting, participantId) {
-    if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL'))
-        return false;
+    if (!isWebhookReady()) return false;
     try {
-        await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'text/plain' },
-            body: JSON.stringify({ action: 'deleteParticipant', id: participantId, tanggal: meeting.date }),
-        });
+        await postToSheet({ action: 'deleteParticipant', id: participantId, tanggal: meeting.date });
         return true;
-    }
-    catch (err) {
-        console.error('Gagal menghapus data peserta di Google Sheets:', err);
-        return false;
-    }
+    } catch (err) { console.error('Gagal menghapus data peserta di Google Sheets:', err); return false; }
 }
-// Pindahkan satu peserta ke tanggal kegiatan lain (mengubah kolom Tanggal di tab
-// "Peserta" saja, field lain seperti nama/institusi/TTD tetap sama). Perlu Apps
-// Script versi terbaru (action "moveParticipantDate").
 async function moveParticipantDateInSheet(participantId, newDate) {
-    if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL'))
-        return false;
+    if (!isWebhookReady()) return false;
     try {
-        await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'text/plain' },
-            body: JSON.stringify({ action: 'moveParticipantDate', id: participantId, newDate: newDate }),
-        });
+        await postToSheet({ action: 'moveParticipantDate', id: participantId, newDate: newDate });
         return true;
-    }
-    catch (err) {
-        console.error('Gagal memindahkan tanggal peserta di Google Sheets:', err);
-        return false;
-    }
+    } catch (err) { console.error('Gagal memindahkan tanggal peserta di Google Sheets:', err); return false; }
 }
-// Ambil pengaturan kegiatan + seluruh daftar peserta untuk tanggal tertentu dari
-// spreadsheet sekaligus (satu request), dipakai saat halaman pertama dibuka supaya
-// semua perangkat menampilkan data yang sama persis.
 async function fetchAllDataFromSheet(date) {
-    if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL'))
-        return null;
+    if (!isWebhookReady()) return null;
     try {
         const url = `${GOOGLE_SHEET_WEBHOOK_URL}?action=getData&date=${encodeURIComponent(date)}`;
         const res = await fetch(url);
-        if (!res.ok)
-            return null;
+        if (!res.ok) return null;
         const data = await res.json();
-        if (!data || data.error)
-            return null;
+        if (!data || data.error) return null;
         return { settings: data.settings || null, participants: Array.isArray(data.participants) ? data.participants : [] };
-    }
-    catch (err) {
-        console.error('Gagal mengambil data dari Google Sheets (mungkin Apps Script belum di-update):', err);
+    } catch (err) {
+        console.error('Gagal mengambil data dari Google Sheets:', err);
         return null;
     }
 }
-// Ambil daftar seluruh kegiatan (tanggal + judul) yang pernah tersimpan, untuk fitur
-// "Riwayat Kegiatan" di admin dan daftar pilihan saat memindahkan peserta.
 async function fetchEventsList() {
-    if (!GOOGLE_SHEET_WEBHOOK_URL || GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL'))
-        return [];
+    if (!isWebhookReady()) return [];
     try {
         const url = `${GOOGLE_SHEET_WEBHOOK_URL}?action=listEvents`;
         const res = await fetch(url);
-        if (!res.ok)
-            return [];
+        if (!res.ok) return [];
         const data = await res.json();
-        return Array.isArray(data && data.events) ? data.events : [];
-    }
-    catch (err) {
-        console.error('Gagal mengambil daftar kegiatan (mungkin Apps Script belum di-update ke v7):', err);
+        const list = Array.isArray(data && data.events) ? data.events : [];
+        return list.map(ev => ({ ...ev, date: normalizeDateValue(ev.date) }));
+    } catch (err) {
+        console.error('Gagal mengambil daftar kegiatan:', err);
         return [];
     }
 }
 // ==========================================
 // PENYIMPANAN DATA LOKAL (per tanggal kegiatan)
-// Setiap kegiatan/tanggal punya data sendiri (judul, lokasi, header PDF, peserta),
-// disimpan di localStorage browser supaya tidak hilang saat halaman di-refresh
-// dan supaya data dummy tidak muncul lagi setelah admin menyimpan data asli.
 // ==========================================
 const STORAGE_KEY = 'aksiAbsensiDataByDate';
 function loadAllSavedData() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
         return raw ? JSON.parse(raw) : {};
-    }
-    catch (err) {
-        console.error('Gagal membaca data tersimpan:', err);
-        return {};
-    }
+    } catch (err) { console.error('Gagal membaca data tersimpan:', err); return {}; }
 }
 function loadSavedDataForDate(date) {
     const all = loadAllSavedData();
@@ -309,87 +223,77 @@ function saveDataForDate(date, data) {
         all[date] = data;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
         return true;
-    }
-    catch (err) {
-        console.error('Gagal menyimpan data:', err);
-        return false;
-    }
+    } catch (err) { console.error('Gagal menyimpan data:', err); return false; }
 }
-// Google Sheets menyimpan nilai sel bertipe "Time" secara internal sebagai tanggal
-// dasar 30 Desember 1899 + jam yang dimasukkan. Kalau Apps Script mengirim baliknya
-// sebagai Date, JSON akan berupa string seperti "1899-12-30T12:17:56.000Z" — fungsi
-// ini menormalkannya kembali jadi "HH:MM" biasa. Kalau nilainya sudah "HH:MM", dibiarkan.
+// ==========================================
+// TANGGAL & JAM
+// ==========================================
+// Tanggal hari ini menurut zona waktu WIB (bukan UTC), format YYYY-MM-DD.
+// (toISOString() memakai UTC sehingga jam 00.00-06.59 WIB tanggalnya masih kemarin.)
+function getTodayWIB() {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+}
+// Jam sekarang diperlakukan sebagai TEKS biasa (mis. "09.00" atau "09:00 - 12:00").
+// Tidak ada konversi zona waktu lagi. Satu-satunya pengecualian: data lama dari
+// spreadsheet yang berbentuk ISO "1899-12-30T..." dikonversi sekali ke "HH:MM" WIB.
 function normalizeTimeValue(value) {
-    if (!value)
+    if (value === null || value === undefined) return '';
+    if (typeof value !== 'string') return String(value);
+    if (/^1899-12-3\d?T/.test(value) || /^\d{4}-\d{2}-\d{2}T/.test(value)) {
+        const d = new Date(value);
+        if (!isNaN(d.getTime())) {
+            let total = d.getUTCHours() * 60 + d.getUTCMinutes() + 7 * 60;
+            total = ((total % 1440) + 1440) % 1440;
+            return String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+        }
         return '';
-    if (typeof value !== 'string')
-        return '';
-    if (/^\d{1,2}:\d{2}/.test(value))
-        return value.slice(0, 5);
+    }
+    return value; // teks biasa: biarkan apa adanya
+}
+// Tanggal dari spreadsheet: kalau berupa ISO datetime (UTC), ubah ke tanggal WIB.
+function normalizeDateValue(value) {
+    if (!value) return '';
+    if (typeof value !== 'string') return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
     if (value.includes('T')) {
         const d = new Date(value);
         if (!isNaN(d.getTime())) {
-            // Apps Script menyimpan & membaca jam sesuai zona waktu proyeknya (WIB/UTC+7),
-            // tapi saat dikirim sebagai JSON otomatis dikonversi ke UTC (dikurangi 7 jam).
-            // Tambahkan lagi 7 jam di sini supaya kembali ke jam WIB yang sebenarnya dimasukkan.
-            const WIB_OFFSET_MINUTES = 7 * 60;
-            let totalMinutes = d.getUTCHours() * 60 + d.getUTCMinutes() + WIB_OFFSET_MINUTES;
-            totalMinutes = ((totalMinutes % 1440) + 1440) % 1440; // bungkus 0-23:59
-            const hh = String(Math.floor(totalMinutes / 60)).padStart(2, '0');
-            const mm = String(totalMinutes % 60).padStart(2, '0');
-            return `${hh}:${mm}`;
+            return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
         }
-    }
-    return '';
-}
-// Sama seperti di atas tapi untuk sel bertipe "Date" — kalau baliknya berupa
-// datetime ISO penuh, ambil bagian tanggalnya saja (YYYY-MM-DD).
-function normalizeDateValue(value) {
-    if (!value)
-        return '';
-    if (typeof value !== 'string')
-        return '';
-    if (/^\d{4}-\d{2}-\d{2}$/.test(value))
-        return value;
-    if (value.includes('T'))
         return value.split('T')[0];
+    }
     return value;
 }
-// Tanda tangan yang datang dari Google Drive (setelah refresh/sinkron dari perangkat lain)
-// dimuat lewat internet, bukan lagi base64 langsung — butuh waktu untuk sampai. Kalau
-// window.print() langsung dipanggil, kotak TTD bisa kosong di hasil cetak/PDF karena
-// gambarnya belum sempat termuat. Fungsi ini menunggu SEMUA gambar TTD selesai (atau gagal,
-// atau timeout 8 detik per gambar — supaya tidak macet selamanya kalau 1 link rusak)
-// sebelum dialog cetak dibuka.
+// Format tanggal panjang bahasa Indonesia. timeZone UTC dipakai karena string
+// "YYYY-MM-DD" diparse sebagai tengah malam UTC — supaya tidak bergeser hari.
+function formatDateID(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr + 'T00:00:00Z');
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
 function waitForPrintImages(containerId) {
     const container = document.getElementById(containerId);
-    if (!container)
-        return Promise.resolve();
+    if (!container) return Promise.resolve();
     const imgs = Array.from(container.querySelectorAll('img'));
     return Promise.all(imgs.map(img => {
-        if (img.complete && img.naturalWidth > 0)
-            return Promise.resolve();
+        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
         return new Promise(resolve => {
             const done = () => resolve();
             img.addEventListener('load', done, { once: true });
-            img.addEventListener('error', done, { once: true }); // jangan macet kalau 1 link gagal
+            img.addEventListener('error', done, { once: true });
             setTimeout(done, 8000);
         });
     }));
 }
 function App() {
-    // Global States
-    const [view, setView] = useState('list'); // 'list', 'sign', 'thankyou', 'admin', 'self-register'
+    const [view, setView] = useState('list');
     const [isAdminAuth, setIsAdminAuth] = useState(false);
     const [logoError, setLogoError] = useState(false);
-    // Modal State
     const [modal, setModal] = useState({ isOpen: false, type: '', message: '', onConfirm: null });
     const [passwordInput, setPasswordInput] = useState('');
-    // Tanggal hari ini dipakai sebagai kunci data tersimpan
-    const todayStr = new Date().toISOString().split('T')[0];
-    // Meeting Data State — jika sudah pernah disimpan admin untuk tanggal ini,
-    // muat judul/lokasi kegiatan yang tersimpan. Jika belum pernah, mulai kosong
-    // (bukan lagi judul contoh/dummy).
+    // Tanggal hari ini (WIB)
+    const todayStr = getTodayWIB();
     const [meeting, setMeeting] = useState(() => {
         const saved = loadSavedDataForDate(todayStr);
         const defaults = {
@@ -397,7 +301,7 @@ function App() {
             date: todayStr,
             time: '',
             endTime: '',
-            mode: 'Offline', // 'Offline' atau 'Online'
+            mode: 'Offline',
             location: '',
             allowManualEntry: true
         };
@@ -405,33 +309,24 @@ function App() {
             const merged = { ...defaults, ...saved.meeting };
             merged.time = normalizeTimeValue(merged.time);
             merged.endTime = normalizeTimeValue(merged.endTime);
-            merged.date = normalizeDateValue(merged.date);
+            merged.date = normalizeDateValue(merged.date) || todayStr;
             return merged;
         }
         return defaults;
     });
-    // PDF Header State
-    const LOGO_AKSI = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD//gA7Q1JFQVRPUjogZ2QtanBlZyB2MS4wICh1c2luZyBJSkcgSlBFRyB2ODApLCBxdWFsaXR5ID0gODIK/9sAQwAGBAQFBAQGBQUFBgYGBwkOCQkICAkSDQ0KDhUSFhYVEhQUFxohHBcYHxkUFB0nHR8iIyUlJRYcKSwoJCshJCUk/9sAQwEGBgYJCAkRCQkRJBgUGCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk/8AAEQgAwADIAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/aAAwDAQACEQMRAD8A+qaKKKACiiigAooozQAlLijNZWueJtH8N2xuNW1G3s4wM/vH5P0HU/hQk27IVzTzx0ozmvH9c+PkM0Tx+FtHurqQnAuLpRHF9QM5P44rh9Q8Z+Otc3C9182kbf8ALKzUJ+teph8nxFbW1l5nl4nOsJh9JzV+y1PpOe6t7Zd088cS+rsAP1rJuvHHhezlMNz4i0eCQdUkvI1YfgTXzXc6f/aDB9Su7y+cfxXEzPUSWGkwEgRWynuCR/WvRjw9ZfvJ2PGqcXUL2pQcj6U/4WF4P/6GnQ//AAOi/wDiqkt/HPha7lWG38SaRNI3RI7yNifwBr5tWwsHG5LeBh6hQaZJpenStse2gLDnbjBq/wDV1W0mYrjGnezpv7z6rgu7e5XdBPFKPVGDfyqbNfKFrp404ltOuruxc9Wt5mT+Va2neL/HGhEGy8QPdxqc+VejeD+Nc1Xh6tH4Gmd2G4qwVV2k3H1Ppgcegp4rxvRPj6baMR+KdHuIGBx9psgJIyPUgnI/DNem6F4o0bxLbrPpWo290rDdhH+YfVeoryK+Eq0XapGx79HE0q0ealJNeRr0UZozXObhRRRQAUUUUAFFFFABRRRQAUUUUANJ461Xv9QtNLtJby9uI7e3iG55JGwqisrxd4x0vwVpR1DVJGVM7Y40GXkb0ArwPxX4o1bx/difUWe10xSGh05W44/ik9TXfgcuqYqXu6LuedmGZ0cFT56r9F1Z1/ib44XuoTvZ+ELZEgBw2pXK5B/3E/qfyrz65t5dSvn1DVrqXUbyTrLNyB7AdAKnRURQqqAo6AdqytWuptMu7e7aQmzOYpk7Lno39K+vo4Ghg4c6V/M/PcVneKzCo6UJcqey7/MvRXcL3ElrGDuhUFsDhc9BWXNPqN3q9zZC8S0giRXDLGCzKfcnjnNV9G1mCJppLxJIGu5TIkrj5HXooB+lP16K0TUrK9utrWzgxOSfl6ZUnHWipW9pTU0+uq20OelhvZV3CS3WjtfXd2NHTTaxvJBFevdS9XLybiP6CsC3XSYtY1JdQgSSTzspmMscY9q1bfVbVGEWn6fM6kgFo4tigfU4qzZ2UsGp3s7qvlzbGQ55yBg/0olD2qio2dn2uvxCE/YOcp3V13Se67FDRHS2l1CeOOSDTxtaNXBUZAO4gHoOlZkF24vLbXJJF/0mcxFAfuRnha6LXLCfU7VbWGRY0dx5pPXb3Aqvf+G7GXT5YLa0hjl2/IwUAhh05qKuHq7Q2jr8/L0NKOMw7vKpvLR9bLbV+e5L4juZYrBY4GKz3EixIw6gk9a0412gKSTgYye9YEpuPtWmSXsMgSCMtIUXcBJjHb8a1TqlmLaS4+0R+XGPmIPT8K6qNROUpydttDgxFBqnCFNX31Xm7InnlihiLzsqRjqWPFQRWrW11HqGl3MlhdodyTwHGfqO4rmNQ1JNVS6e9drZY4mNtbOCu84++fX2FdXp422VuP8Apmv8qUK0MTJwa902lTrZfCNWE2pX6bf8E9C8KfGu706RbLxeiyQk4TUoEwB7SIOn1FewWV9balapdWc8c8Eg3JJG2Qw+tfMTKsilXAYHgg96s+G/EWreAbz7XpMjzWJOZ9Odjsceq/3TXjZhkad54f7j6rJ+KI1LUsVo+/T5n07Siuf8H+MtM8a6Ut/p0hH8MsL/AH4W9GFb/avlZRcXyyWp9pGSauhaKKKRQUUUUAFFFFADTjmsTxd4os/B+gz6reHKxjCRg8yOeij61p39/b6ZZT3t3KsMEKF5HY8KBXzd4n8U3Xj7Xf7UnDxaZb5WxtiePeQj1Nehl2BliqnL0W55uZ5jTwNF1Z/Jd2VdV1XUfFuqvrussQ7D9xaZJjtl7AA9/U1Ri1mwnufssVzG8h6BeQfbPSjWobifS7iO2BMrphQDgn1Gfpms2G4vLhFtNL082MUWAZbhNuPXC9z719jdYe1KmtPTc/Nqk5Y/mxFaWt+9kiSOd9D1LyLh2ayuXJikY58tz1Un0Pate6to7y2kt5VDLINpFYsSTajLeaRqMiT7UV1lRcYz/UVfWddJtIYJpXuJcBEAGXkPoBVUJXTT+DXfp3RlXoylOHs/4mm3Xs/8w0q0eLTFtLxEfysxjIBDKOhx9Kh+26bYlbS3j85y3ywwrvO4+gr0Dw38G9b8TW0d3r9y2kWknIs4xmZl/wBo9Fz6V6z4Y8C+H/CMITStOiikAwZ2G6Vvqx5rycTnFCiuSkuZrQ+nwXDNWq3UxUrXd7I8IsfBfjjVtpsvDklrE3SS8cR/+O9f0rorL4IeLbhN95rmnWrEfcjiL4P1r3ag+9eRVzvEPZ2PoKOQ4KmtIJ+up4cfgD4g6/8ACWRf9+KivPgf4tgQNZ67p90w/gkiKZ/Gvco50kZkXqpwakrCnnWJl70Z3RvPJ8G9JU19x81Xngfx5pBY3Xh43cS9ZLKQP+S9T+Vc095pt5OLe8gMM8bgmK4TYQw9Qf619dVz/ibwN4f8Wx7dX02GdwMLMBtkX6MOa9Gjn09qsU0eZiOGcNPWleL8j5o8QWB1HSpoo4kklwCmQODntVtJEtbJWmYIscY3E9sCuz8S/BjXPDyvc+GrhtUs15NlMcSqP9lujfSuEeSLVbe4s5FeCbBjkhkXDxn3Br3sNiqNe9Si/etsfH5jlOJwqjSq6wTvdeZn6pK11qdjF9pnisbiM4eF9u5+2TVvSrmZL2502eRpzAFZZT1ZT2b3rN1CW4nsG0u40+5e5TAiliX5GI6Nu7VoXuqxaTDFEyC41CVVUInBdumT6CphUtNzbt3/AMiKlLmoxpRjdvRWt3vf7tDUsr3UfDmqxa5o0pjuIf8AWQg4S5XurDvX0L4I8YWfjbQYtTth5b52Twk5MUg6qa+ZbK9vbS6S21Yx5uOYnT7ob+5/hXQeHvE174B1dtWsVMtnNgX1rnh1/vj0YVxZlgY4qHtaStJdD3MizaeGmsLiZXi9n09Ln07RVLSNWtNc0231GylEttcIHRh6GrtfINNOzPvAooooAKDQKzfEGsweH9HvNUum2w2sTSN74HA/E0JNuyA8o+OfiN7y7s/CNpNhGX7Tf7TztB+RD9Tkn8K801W//sewM6W7SqmF2KcAD1J7CpbS4n1Ke51i9Znu7+QyuW5IGeB9AKr/ANsWU9xLZXAaGTJXZMMBx6g9DX3mDw6w2HUb2k+vmfmGc42WMxjsuaEOn5lZvEwgjEl3p15Chx+8UB059waRr9NcdU07UpbZ1UllMJ6fjVZbc6ZqVvaXUrNpxffbZGQH7KT7dq27ueKxhaYR5c/KqqOXY9AKqk6lRNVJaLfv96OSpTpQnFUIXlLbqvuaZXs7M2txHpunRSXmqXr4RerSMe7HsBXuPw5+FFr4VUalq5j1DWn5MpGUg/2Uz/Oo/hL8Ov8AhHLM63q0avrV4u45H/Huh6IPQ+tejgV81mWZOo/Y0dIL8T77KcpjhY+0qa1Hu/0Q/FFFFeMe4IRmq18haFiJGjwM5FWK80+KXxIl8MyQadpghku3+eUuNwROwx6n+lcmMUZUZRfVHXgcJVxNZUqKu2dVaCd7hSXdBIfvetdAi7QBknHc188t8aPFO1dws8dV/c//AF69d+H3jKPxjoqXLbUu4jsnjX+FvUexryMiwUcHGVPncm9bv8T080ybFYWCq1UuXbR3OszRSUtfRHgiY6V578Q/hPaeMH/tLTpF0/Wox8s4HyS+zgfz616FmitKVWdKXPB2ZnUpxqRcJq6Z8pzrdWd7c6PqMZtNTt8o6dRnsy+o71h6ZawObrTNRjzeMSxmJ5lXsyntj07V9EfFL4dR+LbD+0NPRYtbs13QyDjzQP8Alm317V4SscWoqk8tuVvLRmUxk7WSQcFT+NfYYPFLGRUn8Ud13R8BmuWvL25U78kuvVPp8gisJLixa11MpJ5bfLKpwSB0b2NWLbULS+aSCCVJmi4cA5Arn9Ws9ZvbJru7uobaNPmNqM4I9Cw5JNXtNuJtNgRJdIMCkAlrc7wPqOv8666VblqcvLZd3uzxq2F5qfOpqUr7J2SfXf8AQ9O+B/iOTSdbu/Cl1Ji0uFNzY7j91h99B9ev4e9e4+9fJ2oGeNINRsZGjurNxPEw4PHavpjwn4gg8T+HLDV7c/LcxBmHdWHDD8CCK+bzvB+yq+1jtL8z73h7MPrWGSk/ejozbooorxD3xD0ryL4++IWistP8LQD59SkEs5/uxI2QPxI/8dr13NfOPxIvH1b4n6iZB8mnxJbxjPQkZJ/U/nXpZRQVXERT2Wp5mb4n6vhJ1PI5vUb/AOwRRrFCZppDsiiU4yf8BVPVbuwFtFHq9uplkGfJjG9l9wRz+NS6tZ3jXlrf2IjeSAMpjkOAwbHft0qnAYtHaTUNZmU31xnaoy21R0Va+urynzOL0Xntb/M/NcNTpcsZxd5dk9b9vRbk2kWe4JJBefa9PPKJMu5o2HTB9q7n4S6EPFXjQ6jMm/T9G+Zdwyrzngfl1+oFcLab9K0Ca4cFJJC8wVuqljwP5V9I/Cvwt/wingywtJI9l1Mnn3GRzvbnB+gwPwry8yxDoYZQWjkfS5BhFXxMq89VHRevf1OwAxRRRXyZ9wFGaDTWbAz6UAY/ijxDbeGNFudTuSMRr8i93Y9FH418zltQ8YeIRuJmvL2bH0z/AEA/lXV/FzxofEOsnTrWTdY2TFcqeJJO5/Dp+ddR8EfB/kQv4iu4v3koMdsGH3V7t+PSvMqt16qgtkfe5fSjlGAli6q/eT2X5L9WXfGHwutm8EwQafEDe6chdSBzLnlwfr1ry7wL4rn8H69HdZb7O58u4j9Vz1+or6gI9uK+e/i/4N/4R/Wv7StIsWN8S2AOI5O4/HqPxq8VS5LVIdDn4fzFYpTwOLd1O7Xr1X+R79aXUF9axXNu6yRSqHRgeCCODU4x1FeMfBfxv5bf8I5fScHLWrMfxKf1H417QK66NVVI8yPmczwE8FiJUZ/J90LRiiitTgEIrwT4yeHx4e8VQ67AgSy1UeXPgYCzjox+o/lXvZrmviF4YTxb4S1DS9qmZ4y8BPaReV/Xj8a68BiXQrRn0OPH4SOKoSpT2Z826naz3l9aRnH2SMmWX/aYfdB9s0k/iKxglMIMsxHDGJC4X6kUhup5dAlliDC4WFgQRyHAwfxqfR1tV0yD7KE2FAcr3OOc+9fcNvmtB2vrdn5VKChG1WN+R2stNe7JrO+t7+IvC4YDhgRgqfcHpXpXwG8QxxDU/CspIkt5murfPQxvjI/A8/jXkiXCt4maK3IKi3/fbegYN8uffk10/gi6fSviVodzHwLotaSc9iDiuLMofWMNK+8f0Pa4fqLC41Q2U1s+h9L0UUV8Sfo4xyFUk8ADNfLBumv9X1i+dw5nvpiHBzkBiB+gFfUl1/x7Tf7jfyr5Q0JQunR4HUsT+dfRcOxvUm/I+T4uqcuEUe7K5udQ1SaQWMkdtbxMU81l3GRh1wOwFRm8vtNu4E1BYbiGVti3CLtKMfUe9RQ3Unh2aaG5t5pLOSRpI5413bc9QwFTXFwdea3jtYpPs6SiWSWRCo+U8AZ5JzXuc11e75u3/A7HyPJZpcq9nbf5d+/kaaWJ1rxDoejhdwurxPMX1QHLfpmvqsV86fDaKO4+KOkq4yYYJpV9jjH9TX0XnpXzuf1HKuo9kfdcM0lDAxa63Y6iiivDPoBpHIrgvix4zHhrRTaWsu2+vAUTB5Re7V2eqalb6TYzXty4SKFC7E+gr5d8WeJLjxVrtzqc5IV2xEmeI0HQf571yYuv7ONluz6PhvKvreI9pNe5HV+b6IyY2VZFZ13KCCVz1Fen2fxyubC3jt4NFtkijUIqh2wAK2fhv8LtOuNCS+1yyWaa5/eRo+fkTt+fWtmTwj4Ch1HULGXSY430+3S5mkbIQI+7GDnr8h/SuWhhq0VzRdrnu5pneW1qnsq1Ny5dNHp+Zyf/AAv7UP8AoEW//fbVleJfi3L4n0qbT7zR7cJIMBg5yjdiK6bWbTwVpPlCHwZqd/IbdbueK2iBe1hYkKzgsOu1sAZPB6Vsad4T8CapqAsLfSA0jWUV+HIIUxyMyr365Q8Vs6NdqzkebTzLKKclOFFprz/4J4HbXEtpPHcQOY5YmDIynlSK+mPAPi+Lxfocdz8q3UWEnjHZvX6HrXm/xX+G9votrHq2jW/l2yfJPEvRfRv6Vx/gHxdL4Q12K6yzWkpCToO6nv8AUda56UpYapyy2Z7mY0aOd4H6xh/jjt380z6ioNV7S6ivLeO4hdZI5FDKyngg1Y6165+atNOzCkalpKAPl3WrI6P408QaUy4RLtp4x22v83H51zd3p2jwzyKdRa2DNmSBJ9oJ+leg/FdEh+KE4QYM1jG7fUEiuF023Q6xqgkhVsujqWXPUdvyr7nDy9rh6d0nfTU/Nc2h9XxtWSbSsnZdb6dQsNR0HTQLe1ljXccfKrEsfc4q5qUr2j2V/G+x7S5jmDfRhVwQxr0jQfQVS8Qr5mkXAJxhc/rXbKlJUpRla1uh4+DxMfrlOcL3urtu59YwP5kMb5B3KDn8KKraMf8AiUWX/XCP/wBBFFfnE9Gz9hRNdDFrN/uN/KvlHRSBpkRPQZ/nX1jMvmROn95SK+T9OgFsLyxLF/s1zLCSe4DEV9Jw67TmvI+T4uhfCxl0TIE1syW13d/Zz9mhB2SMw/eEdePSoLfVtQie0kvYrcQXZCr5Wd0ZI4Bz1qu2k6iLZ9JSOL7G0m4Tl+QhOcY9atarbzSXVqHMUFlaurtK7cuegAFey5Vb8zurfnf8rHyihQXuRs07/JW0+bZ2vwwUr8U9PY9DaSgfpX0Vivl/w7qJ0jx/4bvd2I2ufs7e4f5f5kV9PqeK+dz6LWIv3R91w3PmwMfLQWiuf8aa3faBoM1/p1obu4RkCx7ScgsAeBzXnf8Awtrxh/0LDf8AfmT/AArxG0tzuxOZUsPLkne/kmyr8a/Gn2i5HhyykzHFhrllPVuy/h1NeW20y29xFM8KSqjhjG+dr4PQ47V30/iC4uZnmm+HdlJLISzO1rISxPc0z+2pP+icWH/gJJXmVqEqk+ds+ty7j7LMHhlh405ebtu+pcT48a5GgRdN0/aBgAB/8a2Hl1HWvEd1rCBDBDplhe3Vmq5+0Ydzs+gG849QvbIOZ4fuo9V1uzsrr4f2FvBM+15fsrjYPXJ4rQv/ABtrOhazewad4Ri2Ji1EqW7/ALyJCdoyByBk/nXVQ543c3c8bM+Icrq04zw1KUdddGdBrM1jqviC4u9G8Qvomrw2ETGSVEa3vIG3MmVf7wU7gSCCNxrIuPFd1peo3evxw2xuP+EcsZNi58rJnmzjviucvvE99qcNrDe/D+0uI7QEQLJaSERA9QOOnHStC38Y6trGowwX3guAx3XlWkztbP8A6kPkL06DcT+NbSldWW55OGzzCKrFzTaurqzM68+Nurajay2tzpenSQyqUdCGwQevevOmILEgYGeB6V6p4omg0XXbuwsvANhdW8TKEl+zOd2VB6jjqTWV/bUn/RN7D/wEkrzqmHqT+KVz7bDcd5TgJShRoyXeyZ0PwX8bEn/hG72TJGWtXY9fVP6ivYxxXz/beIrqznjuLf4e2cU0bBkdbWQFSO4rc/4W34w/6Fk/9+ZP8K7aF4R5ZHymacSYDEV3WoRlFPdWe57NSEcVzfgXXr/xFo32zUrL7HP5rJ5ZUrwMYODXSVuXSqxqQU47M+evi4pPxS3DoNPQH8zXDa1DNYxy6naXUkUg27o2+aN+QOQenXtXUeN9QbVviVrs4bdFblLVD/ujkfmTXMXdpNrZlgN9EtoGAKQAFzg55PbkV9zhYWwcIJe81p6n53m9TmzKUm/dSSfXTsKNblsWRNVt/K3HCzRHcjH+YqxrjD+ybk54KcU630SyhkEpjM0v/PSZi7fr0/Co9eUSWHkbsGWRYx9Sa7UqkaUvaP8Ar1PHoexqYymqKtqr9t+iPqrRv+QRY/8AXCP/ANBFFSWMQhsreEEkJGq59cAUV+dTfvM/X1sT9q+Z/Fluum/ELX7BY/LV5RcIuOoYDJH419M54zXhXx20g6f4p0jX0Q+VdobSZgOAw+7k+4P/AI7XrZLW9niUn1PIz3C/WMFOK3Sv9xwt/qMOnRBpMs7nbHGoyzn0ArD8ie+1q3XWFAjkRnggDfKrA/xepxW1faTa6g8ck6sXjBCsrFSAfpVKTwnYyyK/m3YdfukTNkfSvrMRSrTlorxT2v8Amfm+CrYelBptqTTu7Xt6FnWo2Fj58J2y2zCaMj+Eqc19QeH9atvEOh2WqwMPKuoVkAz90kcj6g5H4V8z2liLa3MLSyTKSeZDk49M13PwT1Nw154QuZ9rQsbmz387kP3gPpwa8HiilVWG+sUYc0o9L/qfU8IYyHNPCuXW6/UXWvCnxfn1e9lsNdCWjzu0Kfa8bULHaMY9Kp/8Id8av+hg/wDJwf4V7L/YUn/PYflR/YUn/PUflX58uIs1St9TX3r/ACPvHhqP834HjX/CHfGn/oYP/Jwf4Uo8G/Go9Nfz/wBvg/wr2T+wpP8AnqPyqe00t7aQuZAeCMAVvQ4gzKc1GeESXe60/AmWGpJXTOC1zQPiDceCNGs9O1QR65CzfbZvtAG8c4+bHPauQPg741f9DB/5OD/CvZf7Ck/57D8qP7Ck/wCew/KueHEGawulg196/wAivq1H+b8Dxr/hDvjV/wBB/wD8nB/hR/whvxq/6GD/AMnB/hXsv9hSf89R+VB0KT/nqPyqv9Y81/6A196/yD6tR/m/A4DRfD3xIg8H65a6hqwk1idojYy/aQfLAPzc444rmv8AhDfjUOuv/wDk5/8AWr2T+w5P+eq/lU91pb3DIRIBtXbyK0pZ7mShObwqvpZXWvfpoJ4eldanif8Awh3xq/6D/wD5OD/Cl/4Q741f9DB/5OD/AAr2T+wpP+eo/Kj+wpP+eo/Ks/8AWPNf+gNfev8AIf1aj/N+B5V4f8K/Fy21uxm1LXfMskmVp0+153JnkYxXsOqana6PptzqN1IEt7aNpHbPYDP51T/sSQ/8tR+VeYfGrUjb2dt4Tt7jM1+wmuNv8ES+v1P8q68ux+YZhi40q2G5Ivqn+hjinRw9KVRy0Wp5xYzPcpPqFzhZb2d7l8+rtn+tZmvaXYQWsl1DF5N0zBY3hYoSzHA6fnWzNZQXFsbSVA8RULsPcDpWRc+GCyxi0vp4hE4kRJDvUMOnWv1SvSkqfJGN9Pmj8hp4qFTEutObTbvto1/XkWLOx1O0ljD3/wBph/jEqfOPoRWvo9rHqnjXw7p8iF1e7EjKPReefxFUNN/tBA635gYgjY8WRu9cg13HwU0GTVfGd9r0i/6Npsf2aInvIw5/IfzFc2MqKhhJNXV+56WSUZYjMVJ2fLrdHvQGBiiiivhT9NErlfiX4afxX4N1DToAv2naJoCe0iHcPpnGPxrqqDVU5uElJbomSUlZnylptw91aI0g2yDKOD2YcH+Vdt4O8E3GuXVrdJcWslqkitKok+dQOcFcVmfEjwsPBvjDzrYFdN1fdKgI+WOYH5lB9+v4+1P8LeJ28L/bJ7eHzLqZBHGW+4ozkkjv2r7l16mJwnPh37zPy7EYOjgsxccSvc3RoeM/Bs2iX13dfaLWK1kkZ4oy/wA5B5wFx26fhXFtcXmk31nremnbe2EgkUf31/iU+xGa6LxN4kfxM1tc3MQjvI08uQr9xx2IHY+1c3f6hbabAZbmQIvQepPoBW2Hpz+rcuJfkzjniY08aquBXW68z6R8I+KrDxjosGqWDjbIMSRk/NG/dTW336V8xeEfElz4D1tdXs98um3OBe2o7qf41H94V9G6Hr2neJNNj1HS7pLm2kHDKeh9D6GvjswwEsNP+69mfp2W5jTxlJTjv1XZmlRiiivOPRCiiimAUUUUAGKMUUUgCiiqGr6zYaFYy32pXMdtbRjLO5wPp7mmk27ICv4k8RWHhfSJ9U1GURwQrn3c9lA7k182zaheeI9XvPEGo/LcXjZSPtDF/Co+grQ8b+KJ/iDrgvJS8Oj2hxZ27ceZ6yMPU/yxVIegr7LJsu9hH2tT4n+B+f8AE+dKovq1F6dX+h3vgfwDLf30GoTzWtxYqGJ8t9xLYwARjjr+lYPiTwlP4blcT3NrgsfLjWTMjLng4xxxVjw540n8LabPBp8StdTyBmkk5VFA6AdzWd4k1lNf1H+0DF5MsiDzUByu4dx7GuijDF/WnKb9z/I8TEVMD9SjGmv3m7+f9bGDqN2LK0kmOMgYUep7CvefhN4Zm8MeCrO3uwBeXLNdT4/vP0H4LtH4V5B4E8Ljxz4yS1nVv7M0sC4uMDiR8/Kmf89DX0iqhFCqMADAA7V4+f4vnmqMem59jwtl31fD+2n8Uvy6D6KKK+dPqgooooA57xp4VtfGOg3GmXPysw3wy94pB91hXzpEl3ZXl1pOpIY9QsnMcqn+L0YexGK+qz9a82+LHw5bxHCNb0aMDW7VMADpcRj+A+/pXsZRmH1afLP4WeHneUxx1Gy+NbP9DxnUr17GANHbyXEjnaiIOp9z2FUrLRZJLgX+qOLi66on8EP0Hr71oWlybmMrIjRToSksL8NG44II7VV1dby6MdlbBo45c+bOP4F9B7mvr6kYy/e/EuiPzWmqlGTw7XLLW762/rsVodfF3rY0+CIPb7X3y9iw7D/Pet7QNZ1jwPfNe6BNmGQ5uLCQ5im+nofcVzb/AGTSdWjAAjgtbNj+JYD8zV7SlunaW/vXdPNHyQFvliT3HrXJFKspU6y5tfuR6SrTwco18M7Ky0/mZ9C+DvifoXi6FI0uEstR6PZXDBZAfbP3h9K7HIxXx8upaRrbGOZTGwcrFK42h8Hqrf0rsvDvj/xj4VCww30erWS/dhvSS4HoH6/nXg4jJL3nh5cy7H1+E4jpv3cUuSXnsfSFBOK8ps/2gNJVV/tjRtSsD0Z0USoD9RjiulsPi14Iv03x+IrKLjlZ2MRH4MBXlVMHXp6Sgz3qWJpVVzQkmvU7GiuZ/wCFleDP+ho0j/wJX/Gqt98WvA9gm+TxHZSeiwMZSfwUGs1QqP7L+40549zsCeKQfnXld78f9FZWGk6VqeoMOA2wRofxJrhvEPxC8ZeJ2KG9XRrJusNmx8wj3fr+VdtDKcTVfw2Xmefis3wuHXvzV+3U9e8Y/E7QPBytFcXAur7olnbndIT7/wB38a8N8TeINU8b6kmoa7IILWM4trBW+SPPr6sawftumaW7/Z4ZrqVT+9khUyFfUs1X7u2g1jTtoY4kUPGw4Knsa+gwGW0aF5J800fI5pxBVrWhBOEJaX6kPiCwe/0maCElXA3KAcZx2rnbS8uY4rMaNeSPLMMPZy/OseOpz1AroNE1GScSWN58t7bcOP747MPrTNP0x9O1m8eOJfs1yBJv7q2eR9O9dVan7WUakHa+j7o8fD1vq8J0ayTtqr7O5b065vpiyXtoIGX+NXDK30qW6eeSWCysIzNfXbiKCNRkknv9BS3l2lrCXwWc8JGPvO3YAdzXrvwh+HtxoMD69rkQ/ti7XCIw5tY/7o9Ce/5UY/GrCUrN3l0OnJMo+v1/bSjywXTv5HUeAPB8Hgvw/HYKRJcv+9upu8sh6n6DoPpXTUY6UZr4Wc3OTlLdn6dGKikkLRRRUlBRRRQAUUUUAeU/E/4VzatPJ4g8NxournHnwM21blQPyDcD615RDcOZZLW6t5bS7hOJbeZSrqfoa+rOeOa4z4gfDiy8b2qusv2LU4OYLtFyR/ssO617eW5vLD2p1NY/kfP5xkVLHR5o6T7/AOZ8+T6HBc6quoTMXCIAsZ6ZHQn1qHxDcySLFplq2Li7OCR/Ag6mtfWrDWPB90bPxHZtCM4ju4gWhlHqD2qjd6ZZasqzEnzAPkmibDL+NfTrkq026DXvbnwdTD18LWisWnaOi6ryGXNnZ2eiyW0iJ9niiI+Ye3X61Ho10Lbw7b3Fw5CpFuZm5OO36YqM6BcXAWK+1OW5tkIIj2BS3+8e9L4pt5JNElS2U4TaSijqoPSk+eF6ijayskZ81Opag5c3M7t62X3kkV/qV3B9oWwjWIjKxySYdh9MYFTWi2GowecltFySrBoxlSOoNSx6lavZ/alnj8jbuLZ4Aql4dUvDc3RG2O5maSNf9noD+PWqU7Sir810DvyyaXLZpK1/uG6fFoup+abe3jJico4K4INWLP8As+e5ubeK0jVrZgpJQckjPFYOn272Vt/a9opZo5pVnjH/AC0j3n9RWl4fnjutQ1WaJg0byRkEd/lrKjiHJxjJJN/lY6sVSlGM5xqNxSXV6O6umEWpanqFxc29lDa2620hjZpWJPsQAK07OG4jhdbm5WaQn7yptA/Cse4tEj8RzCS5lt4rmEPlH2hmXg5P0xVzT7jSrWf7NaXAkllPI3lySPc06EnzvnfVrf8AQwxcU6adJbpPRffdlWxs9a02P7FbR2TRhiwmdiMg88gd6tWV1fxal9ivWgl3xGVHjG3bggYI/HrVi+02S6mWeG7mtpFG07OQw+hpLWxttNEk7Ss7v9+aVsk+2ew9quNCUJrlvZeeliJ4mFWD5knJrone/e4650qO4v4b4M0csWRlf419DUl1dGFlhhhkubqU7YoIhl3P0FWtC0zV/GdwbTw7bGUA4ku5Bthh9ye59hXtvgH4Y6b4KjNy8rahqko/e3cq9PZB/CK5MbmlHDXVPWTPYyvh2viuWeK0gtl1aOc+G3wneymtvEPidA2pod9vag5S29CfVv5V6xilxiivjq+InXm51Hdn6FRw9OjBU6askLRRRWJsFFFFABRRRQAUUUUAFGKKKAK93ZW1/A0F3bxTxN1SRQwP4GvKvFPwHtri5kv/AAvfnS5myxtXG6Bj7d1/X8K9dpK2o4mpRfNTdjGtQp1Y8lRXR8y6n4Y8WeHEZ9W0Kdoo/vXFp+8THrgcise31ixux+7uEB/uscGvrBlBBBAIPY1zGs/DTwjr+5r7QLIyNyZYk8pyf95ME17uH4gmtK0bnzWL4TwtV81JuL/A+cm0HS5HL/Y4zuO4gdCfXHStBVCqFUAKBgAV6rqP7P3huZxJpl5qWmMP4Y5d6/k3P61kS/AG/WctbeLJTH2EsAJ/nXoUs6wm9rfI8jEcKYt2SqXt3uecWGnx2Fu0CsXVnZzu/wBo5pmm6Ta6TJcPbbgJ23spIwp9q9K/4URrH/Q0x/8AgKKSP4Aag84a48WSCPuIoADj25q/7XwSs1020M1wxmD5lKatLfXf8Dzu7sLS9KNcwRy7Pu7xnFVnvNK00YDQRkfwoBn9K9k0/wDZ+8OwyGTU77UtTJ/hkl2Lj6Dn9a6jRfhl4P8ADzLJZaFaeapyJZl81wfUFskfhXLVz6gnzQhdndh+Ep2Ua1V27I8M0zw94q8RIraPoNwYn+7cXI8uP688mu/8OfAWDz4b7xTqT6g6gN9iiGyEN6E9WH5V66FAGABgelBHtXkYnOMRWVr2XkfQ4HJMLhNacde71ZXsdPtNNt1trK2itoV6JEoUD8BVrAoFFeVe+rPXCiiigAooooAKKKKAP//Z";
+    const LOGO_AKSI = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUjogZ2QtanBlZyB2MS4wICh1c2luZyBJSkcgSlBFRyB2ODApLCBxdWFsaXR5ID0gODIK/9sAQwAEAwMDAwIEAwMDBAQEBQYKBgYFBQYMCAkHCg4MDw4ODA0NDxEWEw8QFRENDRMaExUXGBkZGQ8SGx0bGB0WGBkY/9sAQwEEBAQGBQYLBgYLGBANEBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY/8AAEQgAwADIAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/aAAwDAQACEQMRAD8A+/qKKKACiiigAoopM0AJS8UhPNc/4l8ZeF/CGmte+JNctNNhAz+/k+Zv91erfhRGMpO0SXJLc3Qfl+7QTn2+tfOHiT9qS0ntJYPh14Xv7+Ynat7qCCGD6qN2T+O2vK9V+Ifxg8S711XxodPhf/l30xBF/wCPV7uD4cxmJ1tZeZ4ON4my/B6VKiv2Wp9t3V7Y2ce+8vIYE/vSOFH61z198S/h7p901rf+OPDlpMvWOfUoUcf8BLV8R3mlf2rIJde1LUtVkH8d7cvLVePS/DVszKtvYo38SsV/9mr2YcHuMf31Wx83W8Q8NzctCm5H25/wtj4X5/5KJ4V/8Glv/wDF1NafEv4d312lrZeO/DlzM33YodRhdj+AaviZNL0aRd8VlaOP7yorVHLomhzyeVLYWhcfNs27TWn+pqtpVOZeI9Lm5ZUX959/2t9ZXke+0vLe4X+9E4f+VWs/Svz5stKXSGL6HqOoaVKfvPZXLxf+g10Ok+Pvi74ZZW0nxrJqEKHP2fVR5oP/AAKuOvwfiYfw5JnqYLj3LcQ7Tbh6n3Eo2noq1KOnFfNPhz9qVrO2EHxD8L3do4bH27SlE0LD+8yltw/DNe5+GfGvhbxjpyXfhzXLO/R137YpPnH1TqK+dxWX18NK1WFj63DY7D4mHPQmmvI6WikyKMiuM7BaKKKACiiigAooooAKKKKACiijtQBET8udwqnqmq6bomlT6pq17DaWUC75Zpn2qgrn/HvxA8O/Dnwsdb8QzMkedkMMS7pJn9FFfI3jnxp4k+Keqi81x5bDQ0YPbaIj8cfxzepr1sryatmE/d0j3PFzfPMPldH2lZ69F1Z6P4z/AGldW1a+k0v4Y2Ecdop2vrt8m4N/1yi/q35V49eWlxrGuS634k1GfWdSl63F18wH+yq9FWrcaRRxiNECoPuhf4awNdvbnRdUtNSkmJ045guY+yZ6P/Sv0bDZThctp+0UebzPx7HcUY7OKzoU58iey7/M1YL62kv5tPgU77dAX2jhM9BWDcXOuX3i2+0oanHp9rBGkiukILuh9y3HOap+HvENpBJczapFNavfzmaK4lX93InRAp+lSeJ4NMTxHpmrajseykUwSEn5Om5C23rTq4j21FVIvrqttDjoYP2GKdOa3WjtfXd2NrSG0+KWW0t9Ukvp+sjSS7yP6CuQtV8NQ+MNaj1qzjmm+0Zj3Qs5xj/ZroLTW9OSQW+i6NcSIxALwweUgH1OKu6fp1xbeJdTu5Y08m48t423c5Awf6UTpuuoKFnZ9rr8RU6n1V1J1Lq67pPddjJ8OSRWdzq93DBNa6Qux4UlBRchTvKg9B0rCtr+UaxZeLpp0/0y6MDRBv8AVxH5Urs/Eul3es6WmnWsyQxSSD7Qx67O4FU9U8IaRP4fns7DTbaGfZ+7dUCkOOnNZ18JX2p7R1+fl6G2HzDCSvKrvPR9bLbV+e5Y8W3txBoccNoxW6u5kgjcdQS3WtyFAoVGZjgY3HvXIzm9Gq6HNqttMIraEvM0Sb1EuMdvxrfOtaWNNmvftsPlQj5yp+7/AMBruw1ZOUqs3bbQ8nGYVqlTp0VffVebsi1cz29vamW8dI4R95nPFVYbF7PU4db8PX82k6jGd8d3aHbn6j+Ja4bVdYh1yG+l1aV7JIoHaysZQU8w4/1h9fYV3+krs0WzX/pin8qmniKWOm6co+4dM6WJyelCvTqNSv02/wCCew+Bv2jtT0i4TSvidGstsx2x67aR7QvtNEPu/UV9IabqVhrGlR6hpd5Dd2ky74poX3K4+tfCrpHLGySqrqflKnvV3wh4t8S/C3WP7S8NTy3GlE5utElc+XIP7yf3Gr5nOOFk71MJ9x9/w3x1Gty0Mdo+/T5n3XxilWuP+H/xD0D4jeFk1jQ5iP4J7aX/AFlu/wDdda6/+GvgZwlCXJNan6bCcZx5oj6KKKRYUUUUAFFFFAER2/NxXLePfGul+APAl14j1Q5SEbYoQfmmkP3UH1rd1TVLLRtFutW1K4S2tLeMyzSuflQCvibxn421D4peOv8AhIbtZbfQ7TKaVYseP9qZh/eNexk2VzzCtyfZW54meZzRynDuvU36Luyjreua5488UyeMPFUjCV1/0XTslobJOwCn+L+81ZkGv6Pc3/2C3vYZZT0CfMp9s9KTxDb3lz4Zu4bEMZ5I8IqnBP8AeXP03ViW91ql3Cmm+H9FOlwQYDXF7Hsx64Tufev0hNYK1CjHT03PxOtVlm/Pi8RPW/eyRNFcy+G/En2S9kd9MvJC0EznPkyHqjH0PauivbODUNNmsrhA6TDYVrmIEutWu9R8Na3PFdbI0lS4jTGM/wBRWut1HoWlW1pdXEl5PgRxKq7pJT/dVavCz5otS/h679O6MMThZzqU/Y/xdNuvZ/5iaHYSweGU03VIo5fIzCNygh0HQ7fpVY6loWmumm2UP2qVn+S2tk81t5/uivX/AAh+z34t8ZadDqPjO+fw7p83K6ZCubl0/wBtuiZ/u19C+C/hl4K8BWaxeHNDt4Jgu1rt13zv9XPNfPY7iTC4ZezoLma0Pucr4IxFdutjp2u72R8m6b8O/i5ruxtK8DTWFu/SfU5Vg/8AHOv6V2enfs2fEq6h83VPF+jWDkf6qGAy4P8AvV9YcdsUHp8xFfOV+KMW9nyn2GG4Ty2itKal66nyuf2WPGvX/hZMH/gJVfUP2aviXawrJpnjDSL9x/yymtzFn8a+q4rmKWR40PKHBqauajxNjJ+9CpdHTU4by56Sor7j4g1D4a/GPQWdtR8EHUIE6zaVMJf++U6t+VcRJqOhX98LLU7Rra7ikBa3vY/KYOP7yn+tfovXHeM/hn4K8eQeX4m0K2upAMJcgbJk+jjmvZw3FlXavBNHiYzgjB1NaF4PyPh7xVpZ1fwtcW0NvHNPhTHlR8p3fw1oxyxWWiI904jWKEbye2Fr0rxh+zv4u8KJLf8AgG9k13TU5OlXR2zoP9h+j/7teUvNb63YXmmTJJa3ODDNazJtkhb/AGga+twOPw2KvVw79+2x+cZzw/jcAo0K+tNO915mPrU8l54n0q3+33Vvpd3C2JLaTZvk7bjWhol5dJrV9oV3M10bUI6Tnq6N2f3rF1We9uNCfw/eaLey3seFgnt0/duR0ff2rX1HW7fQrOC3eEXmrzoiCOLgyP0yfQVNOty1HUk7d/8AIyrYfmw0aEIXb0Vrd73+7Q3dO1DXPCPimDxd4WuGhvLf/XWqttjvU7o4719jfDfx/pfxI8BweILBfJlz5V1ak5aCUfeQ18N6dqGq2Opx2PiNoc3fMEsX3A//ADz/AMK6/wAKeMtV+Fvi5/EmkI0+m3G0arp+7iRP+ei/3XFeVneVQx9P29BWmuh9Vwrn9XA1FgcbO8Xs+npc+7KKytA17TfEvhu01zSbhZ7K7iWSJx3BrVr86acXys/WUFFFFABSHpQOlYfivxDaeFPB+peIdQcJbWMDzv74HC/iaIxcpcqE3bU+ff2mPF0uoatpvwy0y6xE6fbtW2NzsB/dRH6nJP8AwGvENb1P+wNCN3FZPcJHhPKRtoA9SewqewurzWL6+8Uas7yahqsxnkZ/mKjPyr9AKqHX9Kub+fSr0NbzZKeVcjAkHqD0NfrOWYOOBwahe0318z8L4kzOeZZi0lzU6fT8yi3jJba2E+paJqNtGcfvkUSx8/7SmmvqcXiWVI9D16eykRCXRrY9P+BVTS0bR/Elpp2oXEj6MZPNssruAk7Ize3aunv7m30yze6WDdK3yIiLzI7dFWroSq1otVp6Lfv96PPrUKNKpCOFp3nPbqvuaZT0/T2sr+HQdDt5tS17UpNsSfeeZz3dv4VFfVHwi+Bmn+CEGveJmh1jxPJ8zXDLujtf9iLP86h+BHwkPhHSD4s8SQJJ4n1Bd7bl/wCPSM9I19D617WB9K+IzvOpVpfV8PpTX4n61w9w/DAQ9tW1qvd/oiXApaKK+aPqxjDdzVHUo2e0dlneLAzuWrteG/Gz4wXPg64tdD8PrbTahJ+8naUbxHH2G31P9K87MlGeGnB9UehleX18diFQw6u2egWIu5NQRmlkjEp+/wCtdeibUALM2O5r43b9on4ieWm9dOx1T/R//sq+ivhR8QoPiD4NjvpRHHqEJ8u6hT+B/Uexr5/hbLY5bGdL2jk3rd/ie5nvDWOwFNV68Vy7aO56JkUuKbTq+xPkxhHIFeN/Fj4F6b8QJv7d0OdNH8Twj5LsL+7n9pQP/QuteyZFH1rbD4iph5+0puzMK9CFeDp1FdM/P65XUNP1q98Ma5CdP1y0zHJF95c/wun95f4q5bR7Kzka/wBA1yHdqLsXNyx5mTs6Htj07V9k/G34SweO9D/trRYkg8Uacm+2mHy+eF/5Yv8AXtXygkVvq0cd3cWTJqVg7o0LHY8cy8FG/wCBV+jZbj45nCMn8cd13R+R59kssnk50r+zl16p9PkLBpc11oj6fr5jm8l/kuEO0kDo/sauWmq6dqTy2lpcR3Lw8SAHKiuP17TvFWo6M+pajqNtZQx/OdPG7DD0Z15LGtXRru70eyjiuPDJtFZQWezbzQPqOv8AOvSoYjlq8nJZd3uz5nEYHmo+1jUUp32Tsk+u/wCh7n+zV4un0LxtqHw41CfGn3aG90re33HH+sjH1+9+HvX1UP71fntqxvIobXXdIneG/wBOlF3A4+U8dq+4/Aniqz8afDnSPE1k3yXsAd17o4+V1/Bgwr4nijLfq9f28Phn+Z+tcH5v9fwSjN+/DRnVUUUV8ufXjCPkr5z/AGpvFjwaLo/w7tBmXWZhPdN/cgjfcB+LL/45X0WG4FfFnxg1CXXf2ndZaZf3Wk28dnCu7oWG4n/x5vzr2uHcJHEYyCey1PC4jxv1PL6lXyOK1bU/7MtYY7e2Nxcyny4LdG25P+ArN1y+0YafBB4ks0M8wz9mhHmOnuGHP41Prun6o+r2GsaQsMk1sHRoZjtDh8d+3Ss22MGgSTa14puUbVLvOxF3PsQdESv0XFSqc7g9F57W/wAz8TwdKhyRqxd59k9b9vRblrQdP3LHNaan/aGkHmOK5Te8Ljpg+1ep/Ajwyvjj4znXLqLzNH8O/PHvGUlujwPy+99VFeVWRl0TwFc3soMc0pkuVR+qFz8o/wDQa+1/gh4KHgb4NaTps8Hl39xH9qvNw+bzH5wfoNq/hXg53jHhMEqS0cz7bhLL1i8bPFVNYw0Xr39T0kDApaKK/Pj9TCkzQelMdwqFj/DQCOZ8aeLLHwZ4Kvtf1AjESfu07yOfuoPxr4dLa14/+IC72NzqOpXO3/dz/wCyqv8AKvQPjz8RW8WeMToenzb9K01ymUbiWbufw6f99V3f7N/gD7NaSeONTt/304MNkrr9xO7/AI9K8Ou3i66px+FH6zlFCHDmUyzCuv31TZfkv1Zp+PvgnYv8FLW00a3B1TSIzKhA5mzzIp+vWvB/hn44u/AHjyHUdz/Y5G8m8h9Uz976rX3ew54Xjoa+Ovj98Pf+EV8af27ptvjS9TJfaBxFL3H49R/wKtcdh/ZWrU+hx8I5zHMFUyvMHdVLtevVf5H13YX1nqmlQX9lMk0E6CSN1PBBHBq4NvDKK+ZP2dviQIZf+EG1eb5Wy9g7n8TH/Uf8Cr6dXrxXoYbEKtDnR8RnmU1Mrxc8PU+T7ofSYpaK3PJGEcV8j/tCeFB4T+Klt4ws4hFpeur5N1tG0JdL912+o/8AQa+uGI61w/xY8GRePPhNq/h7YjXMkJktS3aZPmT9ePxr0MpxrwmJhU6HmZvl8cfhZ0KmzPifWLO8v9b0+A4/s+Imef8A23H3AfbNNufFukW1ybRTPcsOHa3jMoT6sKb9tu5/Ac9xAHW7S3ZWDDkSAbW/GregLp6+GrX7AsfltGG3J3bHzbv9qv1Nyblam7X1uz8EqUlShy1oX9m7WWmvdlnT9SstUtWltpVcDhww2lD7qele2/sv+K4YBrnw6uGZZrS5e/s89DDJjK/g3P8AwKvnmO7jf4kPb2TAotp/pGzoHD/Ju9+TXc/Da9l0P9pPwrfw8LfF9Pm57EHbXmZ3S+u4Kd94fofScI1lgMyVPZVFs+h9x0UdqK/Lz9qIZGVI2Y8ADNfApvX1Txd4k1eWVZDdarcFZVbdkK5Vf0Va+9r7/kHXP/XJ/wCVfnz4YRU8Ow7V6s7H86+y4NhetUl5H594h1uTARh3ZUa81rWryZdImhsrOBzH9odN5lcdcL2AqE6hq2karaxa0lteW07+Wl5EmwxufUe9QW97P4TvLm2v7K4m02WZpobuFN+zPUOoqzd3beJ5LOHTreb7HHOJ5riaMoPkPCjPJOa+r5uZXu+ft/wOx+c+z5Wlyr2Vt/l37+Rtx6Y3iL4heFfC6pvF9qUfnJ6xqdz/AKbq/QAcV8X/AAeggu/2ovD0cq5Nva3E6ex27f8A2Zq+zi3K/Svi+Lazniow7I/V+CMPGllkWut2TUUDpRXyx9gQsvzqTye1eSfHX4hr4O8GHTNPuNmq6gDHHtPMa93r0zW9YstB0O51W/kWOC3jMjsfQV8HeOvF97448c3uv3jMEkfbbxZ4hjXoP8/xV5+YYr2MOWO7Ps+C8g/tHF+2qr93DV+b6I5+J0S4R5U3oGDMm7qK9z079pS+0qwhs7PwrZxwRKI0QSPgAV03wf8Agrod34Ij1fxdpSXFxefvoY5c/u4+359a6aXwF8G7fxDrGkXHhuGGXSbOO9uZnysaxyb8YbPX90f0rgwuCxEFzwla59Xn3E+S4qr7DEUXPk00en5nn3/DU2t5/wCRatP+/r1z3jH47XHjPwzcaPqnhm1WOVdodZTmN/4SK7rxDYfCjQvs62vwr1zVpjZpqF1b2FurSWNu5Ko8qs467H2qMn5W6V0ek+BPg/rXiAaNZeGleZ9Mg1cSMpVDDM7onfrmJuK6XhsVJcrmeJRzrh+jONWnh2mvP/gnyRZ3dxYX0N7ZytDcQOHidDyhWvuH4WePrfx94IhvvkS/gxHdQr2f+99D1rxT45/CCz8OabF4k8L2fk2Mf7u6t06J6P8A0rzj4XePLnwD44g1AM76fORHdRDuh/i+o61x0JTwNbknsz6nOcPhuKcr+t4T+JDbv5pn3nx6UHpVKwvrfUdPhvbaVJoZUDo6Hgg1c7V9EficouMuWQ6mv0p1NoA+DPEWnN4f+M/jDw46bYo9Qe7hXtsl+fj/AL6rir7SPDFvfTIdbeyV3zNaRXWxSf8Adr2D45xxW/7T90sQwbjSoZX+oYrXlOj2kR8Ya6s9qj5ljkQum7qP4fyr9UwVR18HR5knfTU/EeIaX1PMq802lZOy6306hpereDtHUWWnzwpvOPkRyzn/AGjtrR1ieWwm0vWYJfKl0++huVf/AHXFaa28CdII1H+yKy/Fi+d4RvFY7cJn9a9Sph5xoThO1rdD5vLcbD+0aNSne91dt3P0Itn82zhlyDuQHP4UVS8PH/ikdM/69Yv/AEAUV+K1VaTP6QjsWb0bdLuf+ub/AMq/Pvw4VHhm3ZvujP8A6FX6EXCCW1ki/vIRX586RbLZrqWkM5l+xX09sWbuFcrX23BsrVai8j8+8Q6XNgoTeyZVj8RmXTNQ1L7GTZW4by5ncfvSvXj0qpa67rUE+nzarb2YtL8hE+z53xEjgNnrVN9B1saZJ4bihg/s15t4u2k5EZbdjHrV/XLS6m1OwWRoLXTbGVJXnlfmQ/dAUV9K5Vubnd1b87/lY/P408Ol7OFmnf5K2nzbPTvgujJ+1LpDt906dOq/pX2dt5zXwj4S1ZtB+PvgnVfM2wve/Y39xL8n82Wvu5DlK+M4sg1i+Z9Ufq3BVTnyyHloKM0H6Vx3xF8Sav4W8C3OsaHph1C8jeMJDsZshnCnhea8b/4Xx8T/APonz/8AgNN/8TXzEmluetjc5oYOfs6l7+SbM/8AaN+Iv2rUx4F0qfMMGHvXRur9k/D7xrwW0uEtb+C6kto50jkDmGTOyTB6HHavXbrxVfXl5LdXXwO0yaeZi7yvYTMXJ7tUf/CRzf8ARCdI/wDBdNXh4nCTrVPaNn6Fk3ixkuW4JYSFGXm7bvqX4v2nfF8MCwpoeklFGFAEn+NdK8+ueIviLfeJ4ljNpbaHpWp3+mIm77Xtllby/wDdA81sf3gnbcGw/C19DrnjTTtK1D4KaTaWtxJskn+wSL5Y9dzfLWxqvxH8U+GfGWp2mh/DOARxYsFuIrOX99BGW2DcF+ZV3N+dd+E9rC7qO581nnF+SV6UamCoSjrrozr/ABDc6TrnxBvNS8LeNpfC/iK30mBzPcRRPZ6javvePckn3wh3glSpXe1c7eeOdR0XxDqHjOC2smvD4L0yby0z5GWurnO3vtrjNS8Z6vrNnYWurfBXT7yGwUrapPp8zCAH7wX5enHSte0+IHiTxB4itrPV/hTamG+8jT7mV7KX/j3Em4J0+6u9m/Gumc7qy3Pn8FxPgFXg6kW1dXVmYmo/tHeJdX0qfTr/AEDR5bedDHJGQ+GB6968acqZGZV2rnhfSvffGlxaeHPHGoaPpXwY0m/s4HQR3BsZG37kDfeX5erNWD/wkc//AEQfSP8AwXTV41bB1qvxyufp+B8VMhyiU6eHw8l3smdf+zt8R2LjwJqs24jL2Mrt19Y/6ivpRBivkGz8W6jp99De2XwR023uYXDxypYTKUI/iWuq/wCF8fE//oQG/wDAeb/CvTwvNThyTPgM94yyrGYp4jCwlFPdWe59M96aVG081xHwy8Uaz4s8G/2nr2lHTbrz3j8hkZOBjDYau3711WNKFeFamqkdmfHHx6Rj+1HvH3Ro8at/301eV+IoLnTLe41/TtQmgmGzfC/zwychfmB6fe7V3fxJ1V9d/aT8V3avvgtDHYRt/uL8w/Nmrhb+wufEhns21aBNPDhWitArSHB3cn+HkV+q4Cny5dTppe81p6n41xFW585nNv3Ekn107Dl8SXOmyxReI7LyN52pc27b43P81q34ldf+ETvmz8pi+WpLTw5pUFwtw0BuZ/8AntcuZH/Xp+FQeKEWbQfse/DTzJCv1Y16SVWGHn7V/wBep85hfq9bMqUcMraq/bfoj7+8Pf8AIo6X/wBekX/oAoqbTIVt9Gs7UMSI4UTPrgCivxau/fZ/RsFoWv4a+HPHVqmj/tB+LtGSDyUknW8jTb1DqNzL/wACr7l4259K+T/2nNBbSvij4d8aRRN5GoRnT7lwvAcfc3H3Df8AjlfR8M4n2ONin1Pm+K8B9cy2pBbpX+48q1TV7XSbVXn3PLI2yGFBueQ+irXK/ZrzUvGlmnidQsM0TyWlor/Ijg/x/wB44rp9T0LTtVmhnvEcyRAhHR2QgH6VmTeBdIuLlJftGoLIn3GW4fI+lfoeLoYipPRXgntf8z8VyzE4ShTcZNqbTu7Xt6F3xHE40P7ZatsnsnFzCy/wFG3V92+FPEVj4s8EaZ4jtHHkX1skyjd9wkcr9Qcj8K+HrHTVtNPa2e4luEJPMxycema9V/Zv1mVZNS+GN/d7Ht3N9pvm/NvjP31X6cNXyXHWHrrB/W8NT5pw6X/U+98O8yp89TAufW6/UXxH4G/aeufF2p3GjeMVi0+S6ke2i/tHbsjLnYNu30rN/wCFe/tYf9Dr/wCVJf8ACvpf/hGZv+fkf980f8I1N/z8D8q/HVxjnsVb+z196/yP1mWCwz+3+B80f8K+/av/AOh1H/gyX/4mnL8PP2sD93xnn/uJL/8AE19Knw1MP+XgflVqw0WS0nMrTg8EYArqw3F2c1JqFTAJLvdafgZywOHSumeR+JPCvxsuvgn4a0zQvEKw+Krd2/tO5+1hfMHzY+fHzfw150fh7+1h/wBDr/5Ul/8Aia+l/wDhGZ/+fkf980f8IzP/AM/I/wC+a5KfFue0uaKy9fev8jT6jhv5/wAD5p/4V7+1h/0Of/lSX/4mk/4V5+1j/wBDr/5Ul/wr6X/4Rmb/AJ+B+VB8Mzf8/A/75qv9cs9/6F6+9f5C+o4b+b8DyDw74T+O9t8IfFOna34lWbxJdPAdKuPtobyQG+f5tvy8VxH/AAr39rBfveNP/Kl/9jX0t/wjc+f9ev8A3zVu90WW6eNlmA2Js5Fb0OKc5VOpUlglfSyute/TQmWDw91qfL3/AAr39rH/AKHP/wAqQ/8AiaX/AIV7+1h/0Oo/8GS//E19K/8ACMzf8/A/Kj/hGZ/+fgflWP8Arlnv/QvX3r/Ir6jhv5vwPAPCngf9pi08baVda94wE2lx3KPdxf2hu3x5+Zdu2vo/WtZ0/QPDl9rmozrFZ2cLzSvnoFGfzrP/AOEcnY4+0D/vmvCf2jdYa10ey+G1le5udVcXN5s/5ZwJ/e/3j/KvRyXNc2zjMIUMRg/ZwfVP9Dmx8sPgsPOq56LU8V0y4lvIbrW7/ak+pXUl7Ju9ZH3f+zVieKNG0i20qa/tYDb3zOEhktnMRLudq9PzrpZ9Os7rTjptxGJICgTyz3A6Vzl54LLJEum6vdQLBIJoopm81Fdfu9a/fcTQnGiqcIX0+aP51pY+nWxssRUqNNu+2jX9eRd0/TdesbmFZdY+22//AC0E8f7wfQiuh8P2UOt/GrwZos8TSpJqAmdB6J83zfitZOj/ANtRrImsNauwI8uW3yN/rkGvU/2cvC8+ufGXVfGM6f6Fo0P2G3Y/xSuPm/Jf/QhXBmdZYTL5tXV+57fDGGljM4UnZ8mt0fW6jC4opaK/Kj9yGe9ef/GPwbN45+Dmr6HaBPtuwXFoW7Sxnev0ztx/wKvQOgpT0qqNR0pqa3RnUiqkeVn5+aPdy3ukxPOuyYZikVuzj5T/AOg16f8AD/4c3viTU7DUIr2xmsI5kedFm/eIBztKYrE+L/glfh78YPtVgCmieIN88alfkhuAfnQH3+9/wL2p/grxk/gv+0buytfOvriMQws/+rQZySR37V+qvFVsdl/tMI/fZ+EYzLsPlecSjjV+73RsfEL4fXXhzW9Qv/t1jBYSzPJBCZP3jA84VMdun4V5k91qmha5pvi3QW2anpUwmRf+eifxo3sRurs/GPi6XxjJZX1/biHUoY/JmKf6uQdmUdj7VxWqapYaPZNcX8wjToPUn0C10YOhU+pcmNfkzzamNhRzNV8sj1uvM+1/AXjjRviD4LtfEOjyDy5VxNCW+eGTujV1P8eNtfCngPxff/DDxqnibS/Nn0S82jU9PXuh/wCWqD++K+0vDXijQ/F/hyHXPD2oRXtlMPldG6H0Poa/N84ymeBqf3Hsz9zyTOaOZUFUj8XVdmb1Jilorxj2goooqgCiiigBMUYpaKkAozRWNr3iHRvDGiT6vr19DZWUIy8srbR9Pc04xcnaIN2KfjDxbo3grwld+IdcuBDaW6Z/2pG7Io7k18TT6pqni7xbqXjTXPkvNQfMUPa3g/gQfQVr/Ejxpd/FbxwNUuGltvDdg2NNsn4871mdfU/y21mj+6tfpXDWTfVYe3rfG/wPyDjniZVl9Tw793q/0PWvhr8LrjVNctdZu7qxvNLRXY+TJvLPjaARt46/pXJeL/At34QupVu7+xwXbyYUlzM6buDjbxxVzwj8Q7zwV4durPRIFe+uZg7zTcpGgHQDuaxvF/iGLxR4h/tprf7NPLGPPiDbk3r3Hsa7MNSzD6/KdR/u/wDI+XxdXLP7NhCiv327+f8AWxyer3y6dpM102NwXCD1PYV9afAjwZc+C/gtptlqYVdSvHe/u9v9+ToP+ApsX/gNfOPwx8FL8S/jHHp92j/2HoYF5eYX5ZpN3yR5/wA/davtlEWOMJGuABgAdq+c4uzH2tRYeHTc/SOAsm+p4T6xU+Of5dCaiiivjT78KKKKAOL+IvgjT/iD4EvNAvxsdx5ltcD70Eq/ccV8YQR6lp2sX/hrXojDrGmyGGdD/H6Ov+yV219/t3+avEvjp8In8XWY8W+FoAviixjwFHS7iH/LNvf0r6Ph3OPqNXkqfAz5Tijh+GbYay/iLZ/ofNGsahLptiJILKa8mkOyOKMdT7nsKzNO8OzS366x4gkF3f8AWOL/AJZ2/wBB6+9a9heNeW5jnie3uo2MU9rL8rwyD5SrL2qlrqaleNFpVirwxTZ8+6H/ACzX0Hua/R6sYTXt/iXRH4nRjVws3hJLklrd9bf12KFv4pW+8ajRLS3Elpsk8y47M47L/n+Kus8LeIPFHw11x9W8F3W62lbdeaPMd0Fx/u/3W/2hXFyHTdD8WRAARW1lpzt/wJnC/wDfTVq6GuoSPPrGqyyR+eP3doX+SCP3HrXnRjHExnSxC5tfuR7ccTUy2cMTg5WVlp/Mz7E+H3xp8IePrSKCG+i0vWfuy6VeuEmB/wBnP3x9K9JJGwYIr84V1fwz4kkMN0hicSFILiRdgkw3VH/pXpPhL4p/FHwQqWtrq8PiHTE+5a6qWaQD0EvX86+TxvC971MJPmXY/RMv4zoyXJjl7OXnsfbHWkZtvavn7T/2qfDaRJ/wlHhXW9JP3XljQXEan/eGOK7jS/jv8JNUh82HxxpkHHKXbtbsPwcCvn62W4qjpOmz6yhj8PiFz05pr1PS6K4T/hcfwr/6KD4d/wDA5P8AGqGp/Hj4RaXD5s/jrTJfRLRzcMfwQGsY4Ss/sP7jb21P+Y9JZvl601T7g14FqP7VPhV4nXw34d13V3HAfylhjP8AwJjXlPiv4r/FPxpIYm1ZPDWmP1ttMc+cR7y9f++a9PCcPY3EP4bLzPIx3EWBwa9+or9up9G/EH40eDPh9E9vfXov9V6R6ZZnfMT/ALX9z8a+VPGXinxD8SfEset+MJltLCJsWWjo/wC7iz/e/vOa5QahoGizSfYrW5vp0P7+a2QzFfUu9a1/Z2mv+HdgdsSoJIXHylG7GvsMpyTDYS80+eoj87z3i+vibU6adOnLS/UreKtLl1Twnc2dqzJIBvRVO3O3+GuNsdQ1CG101fCupyyXFwNsumXH71IcdTu6ha7Dw5q01ys2kan8mp2fEi/89B2cfWotK0aTSfGGoywwJ9jvAJfM7o2eR9O9ehiKTrzhVpu19H3R83hMR9Tp1MPiUpW1V9nc0NJvNXuGaLVdOFq6f8tUkDo/0qe+ku5rq10rRoDc6rfyC3tYUG4kn+L/AHRTtQv4rKzMoVnkPyxwr9+R+wVe5r6J+AfwovfDFlJ4y8XwL/wkl+uI4nXmxi/uD+6T/F+VTm+Zxy6hyt3n0O7hjh3+1sV9ZnDkprp38jvPhZ8P7P4d+AIdGRlmvpD599c/xTzH7x+g6D6V3fekx0oDV+U1asqs3Oe7P3OnTjTioxH0UUVJoFFFFABRRRQB8+fGn4IXeu303jXwJBGniJsfa7R32JeIo/IPwPrXz9b3crXU2najZT6fqFucT2V0hSRD9Gr9AOcr81eZ/FX4Q6V8SdMSVLn+zNctebTUYk3Ff9hx/ElfUZJxFPB2pVtYfkfH8R8KUM1hzw0qd/8AM+Pbnw1Z3nilNaunMgjjASE9Mj7pPrVbxZdzSpBoGnPi7v22lh/yzjHU10PiLTPFHgDUzpnjrS3tlziHUrdWe2nHqD/DWXfaNpWuol0WPnAfurm3fDp+NfdRdLEUnLCte9ufk9bB4rAYmKx6doaLqvIjvNP0yw8GTWE0Uf2SCAj519uv+9UXh69+x/D+0vLyRlWODc7v8xx/D+m2oD4WvbsJb6v4gnvbKNgyw+WELf77d6d42tJpvBc8WnocR7CY0HVA3Sk1UpXqqNrKyRjz0azWGcufmd29bL7yaHVNdv7H7amjwpARlIZpsSOPpjAqxYpo2rWP2qKwg5JR1eFcoR1BqeLV9Pk0j+0Eu4fsuzez54UVm+E0Mlne6gRthvLh5oU/2egP49apVeWUVfmuhvmUJtLks0la/wBxHpUHhTWfPaysoS0EhjkVk2kGrmnjRLnUr2yt9NhR7NwhYxrySM8Vyel2kum6f/wk2mozvFcTJdwj/ltD5h/UVteFLmG+8Qa/dWzh4ZJoSrL/ABfJWOHxbm4QlFJv8rHdjqNSEalSFZuKS6vR3V0xYdX1/VdQvbLSraws0s5jC73Dlj7EACtuwt7yK0lS+v0uZifvpHsA/Cucu7COL4i3Inv7izt7y2Em6OTYrunB3H6YrS0q68O2V99h028E085+YeY0pJH+0aeFk/aP2j6tb/ocmYRUqMZUVuk9F992UNN0/wAV6PB/ZVhBpjQhy63MrsMhvm+YDvV/Tb3WIPEf9las9rP5kBnjlhGzZggYYfj1q5qWkTXt2l3a6lcWUyDYfK+YOPoabZabYaQs15JcPJJJ/rLm4fJPtnsPatI4WdKonG9l56WM54yniKbU4pza6J3v3uPvNDhutdt9XV3hngyNyf8ALRPQ1Le3rW8iWtrazXt/OdkFpbrukkP+6taHhnRvE3xDv20zwPYtOoOJtRmGy2t/dj/E3+ytfUPwt+DGhfDm3a/luX1fXZx+/wBRuE6f7Ma/wCvOzPPsNgeaNHWbPo8h4NxWP5KuO0prZdWji/g98C5dNvLLxv8AEGEPrkbeZZ6ep3R2XoT/AHn/AJV9C7eaXGMYor83xWMq4uo6lV3Z+w4XB0cLSVKirJD6KKK5jqCiiigAooooAKKKKACkwKWigCjf6dY6pYvZ6lZQXcD9Yp0DqfwNeAeNv2YLG61GbWfh7rLaDcvl20+Vd9q7e3dP1/CvowdOtNNdOGxtbDS56MrHLicJRxEPZ1o3R8M6z4L+JPhGF5fEng+6e3i+/e6b+/jx67V5WubtPEGj36/uL2NT/cc7TX6DSIGUhlVgezVwniH4N/DPxSHfV/BmltM3LXFvH9nkJ/349rGvqsHxfVjpiYcx8TmHh/gcQ+eg3B/gfF7+GPD8sxl/syI7jvIXoT646VroipEscagIBgKte+6t+yr4DuZhP4e1TWtEcfwQXHmp+T8/rXPTfssayl6ZLH4k3Bh7LcWoY/zr2aHE+X7uNvkfO4vgHHuyjWvbvc8W0zSoNM097RHMiPI8h3/7ZzUWj6Fp2g3F5LYbwLp/MdGIwh9q9u/4Zi8Uf9FEh/8AABaSL9lfWpL9XvfiTMIe629oFOPbmtP9Y8sVmum2hhHgbN3zqdRWlvrv+B41faZp2otG99aQz+X9zzBnFUZNQ8OaOu1XtIWH8ESrn/x2vpXSv2VPA9vcGfX9X1rXGP8ABNceUmPovP613fh34NfDDwnIk+leD9O89DuW4uU+0SKfVWfJH4VwV+LMKnz0qd2erg/D2pyqGIrvl7I+VNG8KfEbxbCj+F/Bt4YJPuXt8PIh/wB75uWr13wl+y9afbrbV/iJrsusSIA/9l26+VbK/ox+84/KvowIoXAAwP7tDLntXzuN4kxeKXLzWXkfY5Xwvgcu1pQ17vVlPTNK03R9PSw0qwgsrZOkVugRR+ArQwPSgdKWvn+bm1Z9GFFFFMAooooAKKKKAP/Z";
     const [pdfHeader, setPdfHeader] = useState(() => {
         const saved = loadSavedDataForDate(todayStr);
-        if (saved && saved.pdfHeader)
-            return saved.pdfHeader;
-        return {
-            text: 'DAFTAR HADIR',
-            logo: LOGO_AKSI // Logo AKSI tertanam langsung di kode (data URL), jadi otomatis tampil tanpa perlu upload manual.
-        };
+        if (saved && saved.pdfHeader) return saved.pdfHeader;
+        return { text: 'DAFTAR HADIR', logo: LOGO_AKSI };
     });
-    // Participants Data State — dimuat dari data tersimpan untuk tanggal ini kalau ada.
-    // Kalau belum pernah disimpan, mulai dari daftar kosong (data dummy dihapus).
     const [participants, setParticipants] = useState(() => {
         const saved = loadSavedDataForDate(todayStr);
-        if (saved && Array.isArray(saved.participants))
-            return saved.participants;
+        if (saved && Array.isArray(saved.participants)) return saved.participants;
         return [];
     });
     const [activeParticipant, setActiveParticipant] = useState(null);
     const [isPreparingPrint, setIsPreparingPrint] = useState(false);
-    // Inject CSS Print Khusus
     useEffect(() => {
         const style = document.createElement('style');
         style.innerHTML = `
@@ -440,16 +335,11 @@ function App() {
         body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
         ::-webkit-scrollbar { display: none; }
       }
-      /* Cegah Safari iOS otomatis zoom saat input difokus (butuh font >= 16px) */
       input, textarea, select { font-size: 16px !important; }
     `;
         document.head.appendChild(style);
         return () => document.head.removeChild(style);
     }, []);
-    // Saat halaman pertama kali dibuka, coba ambil pengaturan + daftar peserta untuk
-    // tanggal ini dari spreadsheet. Kalau berhasil, pakai itu (supaya semua perangkat
-    // seragam, real-time) — kalau gagal (mis. Apps Script belum di-update, atau offline),
-    // tetap pakai data lokal (localStorage) yang sudah dimuat sebelumnya.
     useEffect(() => {
         let isMounted = true;
         (async () => {
@@ -469,27 +359,22 @@ function App() {
             }
         })();
         return () => { isMounted = false; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
-    // --- HANDLERS ---
     const handleAdminLogin = () => {
         if (isAdminAuth) {
             setView('admin');
-        }
-        else {
+        } else {
             setPasswordInput('');
             setModal({ isOpen: true, type: 'login', message: 'Masukkan Password Admin untuk melanjutkan' });
         }
     };
     const submitLogin = (e) => {
-        if (e && e.preventDefault)
-            e.preventDefault();
+        if (e && e.preventDefault) e.preventDefault();
         if (passwordInput === 'admin123') {
             setIsAdminAuth(true);
             setModal({ isOpen: false, type: '', message: '', onConfirm: null });
             setView('admin');
-        }
-        else {
+        } else {
             setModal({ isOpen: true, type: 'alert', message: 'Password salah!' });
         }
     };
@@ -503,8 +388,6 @@ function App() {
         setActiveParticipant(newUser);
         setView('sign');
     };
-    // Hapus satu peserta langsung dari halaman utama — dipakai admin, misalnya
-    // setelah mencoba isi/tanda tangan absen sendiri untuk keperluan uji coba.
     const handleQuickDeleteParticipant = (p) => {
         setModal({
             isOpen: true,
@@ -519,18 +402,14 @@ function App() {
     const handleSaveSignature = (signatureDataUrl) => {
         const signedParticipant = { ...activeParticipant, signature: signatureDataUrl };
         setParticipants(prev => prev.map(p => p.id === activeParticipant.id ? signedParticipant : p));
-        syncAttendanceToSheet(signedParticipant, meeting); // Catat ke tab riwayat "Kehadiran" (audit trail)
-        syncParticipantToSheet(meeting, signedParticipant); // Update tab "Peserta" + upload TTD ke Google Drive
+        syncAttendanceToSheet(signedParticipant, meeting);
+        syncParticipantToSheet(meeting, signedParticipant);
         setView('thankyou');
         setTimeout(() => {
             setView('list');
             setActiveParticipant(null);
         }, 2500);
     };
-    // Simpan pengaturan kegiatan (judul, tanggal, jam, mode, lokasi, header PDF) + peserta
-    // saat ini ke localStorage (cache di perangkat ini) DAN ke spreadsheet (supaya semua
-    // perangkat lain otomatis ikut melihat data yang sama). Dipanggil lewat tombol
-    // "Simpan Data" di Portal Admin.
     const handleSaveMeetingSettings = async () => {
         const localSuccess = saveDataForDate(meeting.date, { meeting, pdfHeader, participants });
         const remoteSuccess = await syncSettingsToSheet(meeting);
@@ -544,23 +423,15 @@ function App() {
                     : `Data tersimpan di perangkat ini, tapi gagal terkirim ke spreadsheet. Pastikan koneksi internet aktif dan Apps Script sudah menggunakan versi terbaru.`
         });
     };
-    // Auto-simpan data peserta (mis. saat ada yang tanda tangan / isi mandiri / admin
-    // tambah-hapus peserta) supaya data kehadiran tidak hilang saat halaman di-refresh.
     useEffect(() => {
         saveDataForDate(meeting.date, { meeting, pdfHeader, participants });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [participants]);
-    // Cetak PDF: tunggu dulu semua gambar TTD (termasuk yang dimuat dari Google Drive
-    // lewat internet) selesai termuat, baru buka dialog cetak — supaya tanda tangan
-    // semua peserta ikut muncul di hasil cetak, bukan cuma yang sempat ditandatangani
-    // di perangkat ini.
     const handlePrint = async () => {
         setIsPreparingPrint(true);
         await waitForPrintImages('print-template-root');
         window.print();
         setIsPreparingPrint(false);
     };
-    // --- RENDERERS ---
     return (React.createElement("div", { className: "min-h-screen bg-gray-50 font-sans text-gray-800 selection:bg-blue-200 pb-12" },
         React.createElement("div", { className: "print:hidden" },
             React.createElement("header", { className: "bg-white border-b shadow-sm sticky top-0 z-10" },
@@ -588,8 +459,7 @@ function App() {
                 React.createElement("h3", { className: "font-bold text-lg mb-2" }, modal.type === 'login' ? 'Login Admin' : modal.type === 'confirm' ? 'Konfirmasi' : 'Perhatian'),
                 React.createElement("p", { className: "text-gray-600 mb-5 text-sm" }, modal.message),
                 modal.type === 'login' && (React.createElement("div", null,
-                    React.createElement("input", { type: "password", autoFocus: true, value: passwordInput, onChange: (e) => setPasswordInput(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter')
-                            submitLogin(e); }, className: "w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none mb-5 bg-gray-50", placeholder: "Password..." }),
+                    React.createElement("input", { type: "password", autoFocus: true, value: passwordInput, onChange: (e) => setPasswordInput(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter') submitLogin(e); }, className: "w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none mb-5 bg-gray-50", placeholder: "Password..." }),
                     React.createElement("div", { className: "flex justify-end gap-3" },
                         React.createElement("button", { type: "button", onClick: () => setModal({ isOpen: false }), className: "px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition" }, "Batal"),
                         React.createElement("button", { type: "button", onClick: submitLogin, className: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition shadow-sm" }, "Masuk")))),
@@ -597,22 +467,16 @@ function App() {
                     React.createElement("button", { onClick: () => setModal({ isOpen: false }), className: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition shadow-sm" }, "Mengerti"))),
                 modal.type === 'confirm' && (React.createElement("div", { className: "flex justify-end gap-3" },
                     React.createElement("button", { onClick: () => setModal({ isOpen: false }), className: "px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition" }, "Batal"),
-                    React.createElement("button", { onClick: () => { if (modal.onConfirm)
-                            modal.onConfirm(); setModal({ isOpen: false }); }, className: "px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition shadow-sm" }, "Ya, Lanjutkan")))))),
+                    React.createElement("button", { onClick: () => { if (modal.onConfirm) modal.onConfirm(); setModal({ isOpen: false }); }, className: "px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition shadow-sm" }, "Ya, Lanjutkan")))))),
         React.createElement("div", { id: "print-template-root", className: "hidden print:block bg-white text-black w-full text-sm" },
             React.createElement(PrintTemplate, { meeting: meeting, participants: participants, pdfHeader: pdfHeader, logoError: logoError }))));
 }
-// ==========================================
-// REUSABLE COMPONENT: DISABILITY FORM
-// ==========================================
 function DisabilityFormSection({ data, onChange }) {
-    // Handler jika memilih "Bukan Disabilitas"
     const handleNotDisabled = (e) => {
         const isNotDisabled = e.target.checked;
         onChange({
             ...data,
             notDisabled: isNotDisabled,
-            // Jika dicentang (bukan disabilitas), kosongkan semua pilihan disabilitas
             disabilities: isNotDisabled ? [] : data.disabilities,
             disabilityOther: isNotDisabled ? '' : data.disabilityOther,
             declineDisabilityInfo: isNotDisabled ? false : data.declineDisabilityInfo
@@ -622,8 +486,7 @@ function DisabilityFormSection({ data, onChange }) {
         let newDisabilities = [...data.disabilities];
         if (newDisabilities.includes(option)) {
             newDisabilities = newDisabilities.filter(d => d !== option);
-        }
-        else {
+        } else {
             newDisabilities.push(option);
         }
         onChange({ ...data, disabilities: newDisabilities, declineDisabilityInfo: false, notDisabled: false });
@@ -637,7 +500,6 @@ function DisabilityFormSection({ data, onChange }) {
             notDisabled: false
         });
     };
-    // Apakah area disabilitas harus diredupkan/dimatikan?
     const isDisabledAreaDisabled = data.notDisabled || data.declineDisabilityInfo;
     return (React.createElement("div", { className: "border border-gray-200 rounded-lg p-4 bg-gray-50/50" },
         React.createElement("label", { className: "block text-sm font-semibold text-gray-700 mb-3 border-b pb-2" },
@@ -664,11 +526,8 @@ function DisabilityFormSection({ data, onChange }) {
                 React.createElement("input", { type: "checkbox", checked: data.declineDisabilityInfo, onChange: handleDecline, className: "text-red-500 rounded" }),
                 React.createElement("span", { className: "text-sm font-medium text-gray-700" }, "Tidak bersedia menyebutkan ragam disabilitas")))));
 }
-// ==========================================
-// VIEW: PARTICIPANT LIST
-// ==========================================
 function ParticipantListView({ meeting, participants, onSignClick, onSelfRegisterClick, isAdminAuth, onDeleteClick }) {
-    const formattedDate = new Date(meeting.date).toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const formattedDate = formatDateID(meeting.date);
     return (React.createElement("div", { className: "space-y-6 animate-in fade-in duration-500" },
         React.createElement("div", { className: "bg-white rounded-xl shadow-sm border border-gray-200 p-5 md:p-6 relative overflow-hidden" },
             React.createElement("div", { className: "absolute top-0 left-0 w-2 h-full bg-blue-500" }),
@@ -679,11 +538,7 @@ function ParticipantListView({ meeting, participants, onSignClick, onSelfRegiste
                     React.createElement("span", { className: "font-medium" }, formattedDate)),
                 meeting.time && (React.createElement("div", { className: "flex items-center gap-2" },
                     React.createElement(Clock, { className: "text-blue-500 shrink-0", size: 18 }),
-                    React.createElement("span", { className: "font-medium" },
-                        "Pukul ",
-                        meeting.time,
-                        meeting.endTime ? ` - ${meeting.endTime}` : '',
-                        " WIB"))),
+                    React.createElement("span", { className: "font-medium" }, "Pukul " + meeting.time + (meeting.endTime ? " - " + meeting.endTime : "") + " WIB"))),
                 React.createElement("div", { className: "flex items-center gap-2" },
                     meeting.mode === 'Online' ? React.createElement(Wifi, { className: "text-blue-500 shrink-0", size: 18 }) : React.createElement(MapPin, { className: "text-blue-500 shrink-0", size: 18 }),
                     React.createElement("span", null, meeting.location)),
@@ -715,7 +570,7 @@ function ParticipantListView({ meeting, participants, onSignClick, onSelfRegiste
                             isAdminAuth && React.createElement("th", { className: "px-4 py-3 font-semibold text-center w-16" }, "Hapus"))),
                     React.createElement("tbody", { className: "divide-y divide-gray-100" }, participants.length === 0 ? (React.createElement("tr", null,
                         React.createElement("td", { colSpan: isAdminAuth ? 6 : 5, className: "px-4 py-12 text-center text-gray-500" }, "Belum ada peserta."))) : (participants.map((p, index) => {
-                        var _a;
+                        const hasDisData = (p.disabilities && p.disabilities.length > 0) || p.disabilityOther || p.declineDisabilityInfo;
                         return (React.createElement("tr", { key: p.id, className: "hover:bg-blue-50/30 transition-colors" },
                             React.createElement("td", { className: "px-4 py-3 text-center text-gray-500" }, index + 1),
                             React.createElement("td", { className: "px-4 py-3 font-medium text-gray-900" },
@@ -723,7 +578,7 @@ function ParticipantListView({ meeting, participants, onSignClick, onSelfRegiste
                                 React.createElement("div", { className: "block sm:hidden text-xs text-gray-500 font-normal mt-0.5" }, p.institution),
                                 p.notDisabled ? (React.createElement("div", { className: "text-[10px] text-green-600 mt-1 flex items-center gap-1" },
                                     React.createElement(CheckSquare, { size: 10 }),
-                                    " Bukan Disabilitas")) : (((_a = p.disabilities) === null || _a === void 0 ? void 0 : _a.length) > 0 || p.disabilityOther || p.declineDisabilityInfo) ? (React.createElement("div", { className: "text-[10px] text-blue-600 mt-1 flex items-center gap-1" },
+                                    " Bukan Disabilitas")) : hasDisData ? (React.createElement("div", { className: "text-[10px] text-blue-600 mt-1 flex items-center gap-1" },
                                     React.createElement(CheckSquare, { size: 10 }),
                                     " Data Disabilitas Terisi")) : null),
                             React.createElement("td", { className: "px-4 py-3 text-center hidden md:table-cell" }, p.gender),
@@ -736,9 +591,6 @@ function ParticipantListView({ meeting, participants, onSignClick, onSelfRegiste
                                     React.createElement(Trash2, { size: 16 }))))));
                     }))))))));
 }
-// ==========================================
-// VIEW: SELF REGISTER
-// ==========================================
 function SelfRegisterView({ onSubmit, onCancel }) {
     const [formData, setFormData] = useState({
         name: '', gender: 'L', institution: '', role: '', phone: '',
@@ -746,8 +598,7 @@ function SelfRegisterView({ onSubmit, onCancel }) {
     });
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (formData.name.trim())
-            onSubmit(formData);
+        if (formData.name.trim()) onSubmit(formData);
     };
     return (React.createElement("div", { className: "max-w-lg mx-auto bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden animate-in zoom-in-95 duration-300 mt-8" },
         React.createElement("div", { className: "bg-blue-600 p-4 text-white text-center" },
@@ -779,18 +630,14 @@ function SelfRegisterView({ onSubmit, onCancel }) {
                     "Lanjut TTD ",
                     React.createElement(PenTool, { size: 16 }))))));
 }
-// ==========================================
-// VIEW: SIGNATURE PAD
-// ==========================================
 function SignatureView({ participant, onSave, onCancel, showAlert }) {
     const canvasRef = useRef(null);
-    const dimsRef = useRef({ width: 0, height: 250 }); // ukuran CSS (bukan resolusi internal) kanvas, dipakai utk clear & referensi koordinat
+    const dimsRef = useRef({ width: 0, height: 250 });
     const [isDrawing, setIsDrawing] = useState(false);
     const [hasDrawn, setHasDrawn] = useState(false);
     useEffect(() => {
         const canvas = canvasRef.current;
-        if (!canvas)
-            return;
+        if (!canvas) return;
         const setupCanvas = () => {
             const parent = canvas.parentElement;
             const cssWidth = parent.clientWidth;
@@ -817,6 +664,11 @@ function SignatureView({ participant, onSave, onCancel, showAlert }) {
             window.removeEventListener('orientationchange', setupCanvas);
         };
     }, []);
+    const getCoordinates = (e, canvas) => {
+        const rect = canvas.getBoundingClientRect();
+        const point = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
+        return { x: point.clientX - rect.left, y: point.clientY - rect.top };
+    };
     const startDrawing = (e) => {
         e.preventDefault();
         const canvas = canvasRef.current;
@@ -827,8 +679,7 @@ function SignatureView({ participant, onSave, onCancel, showAlert }) {
         setIsDrawing(true);
     };
     const draw = (e) => {
-        if (!isDrawing)
-            return;
+        if (!isDrawing) return;
         e.preventDefault();
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d');
@@ -838,11 +689,6 @@ function SignatureView({ participant, onSave, onCancel, showAlert }) {
         setHasDrawn(true);
     };
     const stopDrawing = () => setIsDrawing(false);
-    const getCoordinates = (e, canvas) => {
-        const rect = canvas.getBoundingClientRect();
-        const point = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
-        return { x: point.clientX - rect.left, y: point.clientY - rect.top };
-    };
     const handleClear = () => {
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d');
@@ -851,8 +697,7 @@ function SignatureView({ participant, onSave, onCancel, showAlert }) {
         setHasDrawn(false);
     };
     const handleSave = () => {
-        if (!hasDrawn)
-            return showAlert('Silakan coret/tanda tangan terlebih dahulu pada area yang disediakan.');
+        if (!hasDrawn) return showAlert('Silakan coret/tanda tangan terlebih dahulu pada area yang disediakan.');
         onSave(canvasRef.current.toDataURL('image/png'));
     };
     return (React.createElement("div", { className: "max-w-xl mx-auto bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden animate-in zoom-in-95 duration-300 mt-4" },
@@ -874,9 +719,6 @@ function SignatureView({ participant, onSave, onCancel, showAlert }) {
                     React.createElement(CheckCircle, { size: 18 }),
                     " Simpan & Hadir")))));
 }
-// ==========================================
-// VIEW: THANK YOU
-// ==========================================
 function ThankYouView({ participant }) {
     return (React.createElement("div", { className: "max-w-md mx-auto mt-16 bg-white rounded-2xl shadow-lg border border-gray-100 p-10 text-center animate-in slide-in-from-bottom-8 duration-500" },
         React.createElement("div", { className: "w-24 h-24 bg-green-100 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner" },
@@ -884,31 +726,24 @@ function ThankYouView({ participant }) {
         React.createElement("h2", { className: "text-3xl font-extrabold text-gray-800 mb-3" }, "Terima Kasih!"),
         React.createElement("p", { className: "text-gray-600 mb-8 text-lg" },
             "Kehadiran ",
-            React.createElement("strong", null, participant === null || participant === void 0 ? void 0 : participant.name),
+            React.createElement("strong", null, participant ? participant.name : ''),
             " tersimpan.")));
 }
-// ==========================================
-// VIEW: ADMIN PORTAL
-// ==========================================
 function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHeader, setPdfHeader, showConfirm, setLogoError, onSaveSettings, onPrint, isPreparingPrint }) {
     const [activeTab, setActiveTab] = useState('settings');
     const [newParticipant, setNewParticipant] = useState({
         name: '', gender: 'L', institution: '', role: '', phone: '',
         disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false
     });
-    // Daftar seluruh kegiatan (tanggal + judul) yang pernah tersimpan — dipakai untuk
-    // tab "Riwayat Kegiatan" dan untuk pilihan tujuan saat memindahkan peserta.
     const [eventsList, setEventsList] = useState([]);
     const [loadingEvents, setLoadingEvents] = useState(false);
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getTodayWIB();
     const isViewingToday = meeting.date === todayStr;
     const loadEventsList = () => {
         setLoadingEvents(true);
         fetchEventsList().then(list => { setEventsList(list); setLoadingEvents(false); });
     };
     useEffect(() => { loadEventsList(); }, []);
-    // Pindah tampilan admin (dan halaman utama) ke kegiatan/tanggal lain — dipakai
-    // baik oleh tab "Riwayat Kegiatan" maupun tombol "Kembali ke Hari Ini".
     const switchToDate = async (date) => {
         const remote = await fetchAllDataFromSheet(date);
         let newMeeting, newParticipants, newPdfHeader;
@@ -918,15 +753,15 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             newMeeting = { title: '', date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true, ...s,
                 time: normalizeTimeValue(s.time), endTime: normalizeTimeValue(s.endTime), date: normalizeDateValue(s.date) || date };
             newParticipants = remote.participants;
-            newPdfHeader = (cached && cached.pdfHeader) || { text: 'DAFTAR HADIR', logo: '' };
+            newPdfHeader = (cached && cached.pdfHeader) || pdfHeader;
         } else if (cached) {
             newMeeting = cached.meeting;
             newParticipants = Array.isArray(cached.participants) ? cached.participants : [];
-            newPdfHeader = cached.pdfHeader || { text: 'DAFTAR HADIR', logo: '' };
+            newPdfHeader = cached.pdfHeader || pdfHeader;
         } else {
             newMeeting = { title: '', date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
             newParticipants = [];
-            newPdfHeader = { text: 'DAFTAR HADIR', logo: '' };
+            newPdfHeader = pdfHeader;
         }
         setMeeting(newMeeting);
         setParticipants(newParticipants);
@@ -940,12 +775,11 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
     };
     const handleAddParticipant = (e) => {
         e.preventDefault();
-        if (!newParticipant.name.trim())
-            return;
+        if (!newParticipant.name.trim()) return;
         const newP = { ...newParticipant, id: Date.now(), signature: null };
         setParticipants(prev => [...prev, newP]);
         setNewParticipant({ name: '', gender: 'L', institution: '', role: '', phone: '', disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false });
-        syncParticipantToSheet(meeting, newP); // Simpan ke tab "Peserta" (belum TTD) supaya terlihat di semua perangkat
+        syncParticipantToSheet(meeting, newP);
     };
     const handleDeleteParticipant = (p) => {
         showConfirm('Hapus?', () => {
@@ -953,10 +787,6 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             deleteParticipantFromSheet(meeting, p.id);
         });
     };
-    // Pindahkan peserta ke kegiatan/tanggal lain — misalnya salah pilih tanggal saat
-    // isi absen. Data lain (nama, institusi, TTD, dst) tetap sama, cuma tanggalnya
-    // yang berubah. Peserta akan hilang dari daftar kegiatan ini dan muncul di daftar
-    // kegiatan tujuan begitu kegiatan itu dibuka.
     const [movingParticipantId, setMovingParticipantId] = useState(null);
     const [moveTargetDate, setMoveTargetDate] = useState('');
     const startMoveParticipant = (p) => {
@@ -971,9 +801,6 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
         showConfirm(`Pindahkan data "${p.name}" ke kegiatan "${(targetEvent && targetEvent.title) || newDate}" (${newDate})?`, () => {
             setParticipants(arr => arr.filter(x => x.id !== p.id));
             moveParticipantDateInSheet(p.id, newDate);
-            // Simpan juga ke cache lokal (localStorage) untuk tanggal tujuan, supaya
-            // langsung terlihat kalau tanggal itu dibuka di perangkat yang sama —
-            // perangkat lain akan mengambilnya dari spreadsheet saat halaman dibuka.
             const targetSaved = loadSavedDataForDate(newDate);
             const targetParticipants = (targetSaved && Array.isArray(targetSaved.participants)) ? targetSaved.participants : [];
             saveDataForDate(newDate, {
@@ -991,8 +818,6 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             toReset.forEach(x => syncParticipantToSheet(meeting, x, { clearSignature: true }));
         });
     };
-    // Konten tab "Riwayat Kegiatan" dihitung terpisah dulu (bukan nested ternary
-    // langsung di JSX) supaya strukturnya lebih mudah dibaca dan tidak salah kurung.
     let historyBody;
     if (loadingEvents) {
         historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Memuat daftar kegiatan...");
@@ -1018,6 +843,8 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             React.createElement("h3", { className: "font-bold text-gray-800" }, "Riwayat Seluruh Kegiatan"),
             React.createElement("button", { onClick: loadEventsList, className: "text-xs text-blue-600 hover:underline" }, "Muat Ulang")),
         historyBody);
+    const tabBtn = (id, label) => React.createElement("button", { onClick: () => setActiveTab(id), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, label);
+    const inputCls = "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50";
     return (React.createElement("div", { className: "space-y-6 animate-in fade-in duration-300" },
         React.createElement("div", { className: "bg-gradient-to-r from-gray-800 to-gray-900 rounded-xl p-6 text-white shadow-md flex justify-between items-center" },
             React.createElement("div", null,
@@ -1025,9 +852,9 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                     React.createElement(Shield, { className: "text-blue-400" }),
                     " Portal Admin"))),
         React.createElement("div", { className: "flex border-b border-gray-200 overflow-x-auto whitespace-nowrap" },
-            React.createElement("button", { onClick: () => setActiveTab('settings'), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === 'settings' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, "Pengaturan & Cetak"),
-            React.createElement("button", { onClick: () => setActiveTab('participants'), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === 'participants' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, "Manajemen Data Peserta"),
-            React.createElement("button", { onClick: () => setActiveTab('history'), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === 'history' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, "Riwayat Kegiatan")),
+            tabBtn('settings', 'Pengaturan & Cetak'),
+            tabBtn('participants', 'Manajemen Data Peserta'),
+            tabBtn('history', 'Riwayat Kegiatan')),
         !isViewingToday && (React.createElement("div", { className: "bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-2.5 rounded-lg flex flex-wrap items-center justify-between gap-2" },
             React.createElement("span", null,
                 "Sedang menampilkan kegiatan tanggal ",
@@ -1039,25 +866,25 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                 React.createElement("h3", { className: "font-bold text-gray-800 border-b pb-2" }, "Detail Kegiatan"),
                 React.createElement("div", null,
                     React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Nama Kegiatan"),
-                    React.createElement("textarea", { name: "title", value: meeting.title, onChange: handleMeetingChange, rows: "3", className: "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" })),
+                    React.createElement("textarea", { name: "title", value: meeting.title, onChange: handleMeetingChange, rows: "3", className: inputCls })),
+                React.createElement("div", null,
+                    React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Tanggal"),
+                    React.createElement("input", { type: "date", name: "date", value: meeting.date, onChange: handleMeetingChange, className: inputCls })),
                 React.createElement("div", { className: "flex gap-3" },
                     React.createElement("div", { className: "flex-1" },
-                        React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Tanggal"),
-                        React.createElement("input", { type: "date", name: "date", value: meeting.date, onChange: handleMeetingChange, className: "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" })),
+                        React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Jam Mulai (teks)"),
+                        React.createElement("input", { type: "text", name: "time", value: meeting.time, onChange: handleMeetingChange, placeholder: "Contoh: 09.00", className: inputCls })),
                     React.createElement("div", { className: "flex-1" },
-                        React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Jam Mulai"),
-                        React.createElement("input", { type: "time", name: "time", value: meeting.time, onChange: handleMeetingChange, className: "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" })),
-                    React.createElement("div", { className: "flex-1" },
-                        React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Jam Selesai"),
-                        React.createElement("input", { type: "time", name: "endTime", value: meeting.endTime, onChange: handleMeetingChange, className: "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" }))),
+                        React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Jam Selesai (teks)"),
+                        React.createElement("input", { type: "text", name: "endTime", value: meeting.endTime, onChange: handleMeetingChange, placeholder: "Contoh: 12.00 / selesai", className: inputCls }))),
                 React.createElement("div", null,
                     React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Pelaksanaan"),
-                    React.createElement("select", { name: "mode", value: meeting.mode, onChange: handleMeetingChange, className: "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" },
+                    React.createElement("select", { name: "mode", value: meeting.mode, onChange: handleMeetingChange, className: inputCls },
                         React.createElement("option", { value: "Offline" }, "Offline (Tatap Muka)"),
                         React.createElement("option", { value: "Online" }, "Online (Daring)"))),
                 React.createElement("div", null,
                     React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, meeting.mode === 'Online' ? 'Link / Platform Online' : 'Lokasi Kegiatan'),
-                    React.createElement("input", { type: "text", name: "location", value: meeting.location, onChange: handleMeetingChange, placeholder: meeting.mode === 'Online' ? 'Contoh: Zoom Meeting / Google Meet' : 'Contoh: Aula Gedung...', className: "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" })),
+                    React.createElement("input", { type: "text", name: "location", value: meeting.location, onChange: handleMeetingChange, placeholder: meeting.mode === 'Online' ? 'Contoh: Zoom Meeting / Google Meet' : 'Contoh: Aula Gedung...', className: inputCls })),
                 React.createElement("label", { className: "flex items-start gap-3 cursor-pointer p-3 mt-2 bg-blue-50 rounded-lg border border-blue-100" },
                     React.createElement("input", { type: "checkbox", name: "allowManualEntry", checked: meeting.allowManualEntry, onChange: handleMeetingChange, className: "w-4 h-4 mt-0.5 text-blue-600 rounded" }),
                     React.createElement("div", null,
@@ -1118,44 +945,42 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                                 React.createElement("th", { className: "px-4 py-2 text-center" }, "TTD"),
                                 React.createElement("th", { className: "px-4 py-2 text-center" }, "Pindah Tgl"),
                                 React.createElement("th", { className: "px-4 py-2 text-center" }, "Hapus"))),
-                        React.createElement("tbody", { className: "divide-y" }, participants.map(p => (React.createElement("tr", { key: p.id, className: "hover:bg-gray-50" },
-                            React.createElement("td", { className: "px-4 py-2" },
-                                React.createElement("span", { className: "font-medium" }, p.name),
-                                React.createElement("div", { className: "text-xs text-gray-500" }, p.institution)),
-                            React.createElement("td", { className: "px-4 py-2 text-xs" }, p.notDisabled ? React.createElement("span", { className: "inline-block bg-green-100 text-green-700 px-2 py-0.5 rounded-full" }, "Bukan Disabilitas")
-                                : p.declineDisabilityInfo ? React.createElement("span", { className: "text-red-500" }, "Menolak sebut")
-                                    : p.disabilities.length > 0 || p.disabilityOther ? React.createElement("span", { className: "text-blue-600" },
-                                        "Disabilitas (",
-                                        p.disabilities.length + (p.disabilityOther ? 1 : 0),
-                                        ")")
-                                        : React.createElement("span", { className: "text-gray-400" }, "Belum diisi")),
-                            React.createElement("td", { className: "px-4 py-2 text-center" }, p.signature ? React.createElement("span", { className: "text-green-600 font-bold" }, "\u2713") : '-'),
-                            React.createElement("td", { className: "px-4 py-2 text-center min-w-[140px]" }, movingParticipantId === p.id ? (React.createElement("div", { className: "flex items-center gap-1" },
-                                React.createElement("select", { value: moveTargetDate, onChange: e => setMoveTargetDate(e.target.value), className: "text-xs border rounded p-1 flex-1" },
-                                    eventsList.filter(ev => ev.date !== meeting.date).length === 0
-                                        ? React.createElement("option", { value: "" }, "Tidak ada kegiatan lain")
-                                        : eventsList.filter(ev => ev.date !== meeting.date).map(ev => React.createElement("option", { key: ev.date, value: ev.date }, `${ev.date} — ${ev.title}`))),
-                                React.createElement("button", { onClick: () => confirmMoveParticipant(p), title: "Konfirmasi pindah", className: "text-green-600 hover:text-green-800" },
-                                    React.createElement(CheckCircle, { size: 16 })),
-                                React.createElement("button", { onClick: () => setMovingParticipantId(null), title: "Batal", className: "text-gray-400 hover:text-gray-600" },
-                                    React.createElement(X, { size: 14 })))) : (React.createElement("button", { onClick: () => startMoveParticipant(p), title: "Pindahkan ke kegiatan lain", className: "text-blue-500 hover:text-blue-700" },
-                                React.createElement(Calendar, { size: 16 })))),
-                            React.createElement("td", { className: "px-4 py-2 text-center" },
-                                React.createElement("button", { onClick: () => handleDeleteParticipant(p), className: "text-red-500" },
-                                    React.createElement(Trash2, { size: 16 })))))))))))),
+                        React.createElement("tbody", { className: "divide-y" }, participants.map(p => {
+                            const disCount = ((p.disabilities || []).length) + (p.disabilityOther ? 1 : 0);
+                            const otherEvents = eventsList.filter(ev => ev.date !== meeting.date);
+                            return (React.createElement("tr", { key: p.id, className: "hover:bg-gray-50" },
+                                React.createElement("td", { className: "px-4 py-2" },
+                                    React.createElement("span", { className: "font-medium" }, p.name),
+                                    React.createElement("div", { className: "text-xs text-gray-500" }, p.institution)),
+                                React.createElement("td", { className: "px-4 py-2 text-xs" }, p.notDisabled ? React.createElement("span", { className: "inline-block bg-green-100 text-green-700 px-2 py-0.5 rounded-full" }, "Bukan Disabilitas")
+                                    : p.declineDisabilityInfo ? React.createElement("span", { className: "text-red-500" }, "Menolak sebut")
+                                        : disCount > 0 ? React.createElement("span", { className: "text-blue-600" }, "Disabilitas (" + disCount + ")")
+                                            : React.createElement("span", { className: "text-gray-400" }, "Belum diisi")),
+                                React.createElement("td", { className: "px-4 py-2 text-center" }, p.signature ? React.createElement("span", { className: "text-green-600 font-bold" }, "\u2713") : '-'),
+                                React.createElement("td", { className: "px-4 py-2 text-center min-w-[140px]" }, movingParticipantId === p.id ? (React.createElement("div", { className: "flex items-center gap-1" },
+                                    React.createElement("select", { value: moveTargetDate, onChange: e => setMoveTargetDate(e.target.value), className: "text-xs border rounded p-1 flex-1" },
+                                        otherEvents.length === 0
+                                            ? React.createElement("option", { value: "" }, "Tidak ada kegiatan lain")
+                                            : otherEvents.map(ev => React.createElement("option", { key: ev.date, value: ev.date }, `${ev.date} — ${ev.title}`))),
+                                    React.createElement("button", { onClick: () => confirmMoveParticipant(p), title: "Konfirmasi pindah", className: "text-green-600 hover:text-green-800" },
+                                        React.createElement(CheckCircle, { size: 16 })),
+                                    React.createElement("button", { onClick: () => setMovingParticipantId(null), title: "Batal", className: "text-gray-400 hover:text-gray-600" },
+                                        React.createElement(X, { size: 14 })))) : (React.createElement("button", { onClick: () => startMoveParticipant(p), title: "Pindahkan ke kegiatan lain", className: "text-blue-500 hover:text-blue-700" },
+                                    React.createElement(Calendar, { size: 16 })))),
+                                React.createElement("td", { className: "px-4 py-2 text-center" },
+                                    React.createElement("button", { onClick: () => handleDeleteParticipant(p), className: "text-red-500" },
+                                        React.createElement(Trash2, { size: 16 })))));
+                        }))))))),
         activeTab === 'history' && historyTabContent));
 }
-// ==========================================
-// VIEW: PRINT TEMPLATE (PDF LAYOUT MIRRORING PHYSICAL FORM)
-// ==========================================
 function PrintTemplate({ meeting, participants, pdfHeader, logoError }) {
-    const formattedDate = new Date(meeting.date).toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    // Hitung jumlah yang disabilitas (notDisabled === false && ada isian) 
+    const formattedDate = formatDateID(meeting.date);
     const totalL = participants.filter(p => p.gender === 'L').length;
     const totalP = participants.filter(p => p.gender === 'P').length;
-    const hasDisability = (p) => { var _a; return !p.notDisabled && (((_a = p.disabilities) === null || _a === void 0 ? void 0 : _a.length) > 0 || p.disabilityOther !== ''); };
+    const hasDisability = (p) => !p.notDisabled && ((p.disabilities && p.disabilities.length > 0) || (p.disabilityOther && p.disabilityOther !== ''));
     const disL = participants.filter(p => p.gender === 'L' && hasDisability(p)).length;
     const disP = participants.filter(p => p.gender === 'P' && hasDisability(p)).length;
+    const has = (p, opt) => !!(p.disabilities && p.disabilities.includes(opt));
     const renderCheck = (label, isChecked) => (React.createElement("div", { className: "flex items-start gap-1 text-[8px] leading-[1.1] mb-0.5 break-inside-avoid" },
         React.createElement("div", { className: `w-2.5 h-2.5 mt-[1px] border border-black shrink-0 ${isChecked ? 'bg-black' : ''}`, style: isChecked ? { WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : {} }),
         React.createElement("span", null, label)));
@@ -1224,7 +1049,6 @@ function PrintTemplate({ meeting, participants, pdfHeader, logoError }) {
                         React.createElement("th", { className: "border border-gray-400 p-1 w-[38%] font-bold text-center leading-tight" }, "Jika Anda Penyandang Disabilitas, Mohon berikan informasi Ragam Disabilitas di bawah ini: (bisa pilih lebih dari satu)"),
                         React.createElement("th", { className: "border border-gray-400 p-1.5 text-center w-[12%]", colSpan: "2" }, "Tanda Tangan"))),
                 React.createElement("tbody", { className: "text-black" }, participants.map((p, i) => {
-                    var _a, _b, _c, _d, _e, _f;
                     return (React.createElement("tr", { key: p.id },
                         React.createElement("td", { className: "border border-black p-1 text-center align-middle bg-gray-100 font-bold" }, i + 1),
                         React.createElement("td", { className: "border border-black p-1.5 align-middle uppercase font-bold text-[11px]" }, p.name),
@@ -1234,13 +1058,13 @@ function PrintTemplate({ meeting, participants, pdfHeader, logoError }) {
                         React.createElement("td", { className: "border border-black p-1.5 align-middle text-center" }, p.phone),
                         React.createElement("td", { className: "border border-black p-1 align-top bg-gray-50/30" }, p.notDisabled ? (React.createElement("div", { className: "flex h-full items-center justify-center text-[10px] text-gray-500 italic" }, "- (Bukan Disabilitas) -")) : (React.createElement("div", { className: "grid grid-cols-3 gap-1" },
                             React.createElement("div", null,
-                                renderCheck('Disabilitas Fisik', (_a = p.disabilities) === null || _a === void 0 ? void 0 : _a.includes('Disabilitas Fisik')),
-                                renderCheck('Disabilitas Netra', (_b = p.disabilities) === null || _b === void 0 ? void 0 : _b.includes('Disabilitas Netra')),
-                                renderCheck('Disabilitas Rungu dan/Wicara', (_c = p.disabilities) === null || _c === void 0 ? void 0 : _c.includes('Disabilitas Rungu dan/Wicara'))),
+                                renderCheck('Disabilitas Fisik', has(p, 'Disabilitas Fisik')),
+                                renderCheck('Disabilitas Netra', has(p, 'Disabilitas Netra')),
+                                renderCheck('Disabilitas Rungu dan/Wicara', has(p, 'Disabilitas Rungu dan/Wicara'))),
                             React.createElement("div", null,
-                                renderCheck('Disabilitas Intelektual', (_d = p.disabilities) === null || _d === void 0 ? void 0 : _d.includes('Disabilitas Intelektual')),
-                                renderCheck('Disabilitas Mental (Psikososial)', (_e = p.disabilities) === null || _e === void 0 ? void 0 : _e.includes('Disabilitas Mental (Psikososial)')),
-                                renderCheck('Disabilitas Mental (Perkembangan)', (_f = p.disabilities) === null || _f === void 0 ? void 0 : _f.includes('Disabilitas Mental (Perkembangan)'))),
+                                renderCheck('Disabilitas Intelektual', has(p, 'Disabilitas Intelektual')),
+                                renderCheck('Disabilitas Mental (Psikososial)', has(p, 'Disabilitas Mental (Psikososial)')),
+                                renderCheck('Disabilitas Mental (Perkembangan)', has(p, 'Disabilitas Mental (Perkembangan)'))),
                             React.createElement("div", null,
                                 React.createElement("div", { className: "flex items-start gap-1 text-[8px] leading-[1.1] mb-0.5" },
                                     React.createElement("div", { className: `w-2.5 h-2.5 mt-[1px] border border-black shrink-0 ${p.disabilityOther ? 'bg-black' : ''}`, style: p.disabilityOther ? { WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : {} }),
@@ -1249,14 +1073,10 @@ function PrintTemplate({ meeting, participants, pdfHeader, logoError }) {
                                         p.disabilityOther ? React.createElement("u", { className: "font-bold" }, p.disabilityOther) : '......................')),
                                 renderCheck('Tidak bersedia menyebutkan', p.declineDisabilityInfo))))),
                         React.createElement("td", { className: `border border-black p-1 align-middle relative h-[50px] w-[6%] ${i % 2 === 0 ? '' : 'border-r-0'}` }, i % 2 === 0 && (React.createElement("div", { className: "w-full h-full relative flex items-center justify-center" },
-                            React.createElement("span", { className: "absolute top-0 left-0.5 text-[9px] text-gray-500 font-bold" },
-                                i + 1,
-                                "."),
+                            React.createElement("span", { className: "absolute top-0 left-0.5 text-[9px] text-gray-500 font-bold" }, (i + 1) + "."),
                             p.signature && React.createElement("img", { src: p.signature, alt: "TTD", className: "max-h-full max-w-full object-contain", style: { printColorAdjust: 'exact' } })))),
                         React.createElement("td", { className: `border border-black p-1 align-middle relative h-[50px] w-[6%] ${i % 2 !== 0 ? '' : 'border-l-0'}` }, i % 2 !== 0 && (React.createElement("div", { className: "w-full h-full relative flex items-center justify-center" },
-                            React.createElement("span", { className: "absolute top-0 left-0.5 text-[9px] text-gray-500 font-bold" },
-                                i + 1,
-                                "."),
+                            React.createElement("span", { className: "absolute top-0 left-0.5 text-[9px] text-gray-500 font-bold" }, (i + 1) + "."),
                             p.signature && React.createElement("img", { src: p.signature, alt: "TTD", className: "max-h-full max-w-full object-contain", style: { printColorAdjust: 'exact' } }))))));
                 }))))));
 }
