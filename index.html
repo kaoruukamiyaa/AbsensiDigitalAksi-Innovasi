@@ -1,402 +1,1254 @@
-/**
- * KODE APPS SCRIPT — DAFTAR HADIR DIGITAL AKSI (v10)
- * Menangani 4 hal:
- * 1. Simpan/baca PENGATURAN kegiatan per kegiatan (bisa banyak per tanggal)  -> tab "Pengaturan"
- * 2. Simpan/baca/hapus/pindah DAFTAR PESERTA (roster + TTD)                 -> tab "Peserta"
- * 3. Catat riwayat KEHADIRAN (audit trail, append-only)                     -> tab "Kehadiran" (format lama, tetap jalan)
- * 4. Hapus SATU KEGIATAN (beserta pengaturan & seluruh pesertanya)          -> action "deleteEvent"
- *
- * PERBAIKAN PENTING DI v10:
- * - "deleteEvent" SEBELUMNYA memakai rowEventId_() yang punya fallback
- *   "kalau IDKegiatan kosong, anggap ID = Tanggal". Ini menyebabkan BUG
- *   SERIUS: menghapus 1 kegiatan yang ID-nya kebetulan berupa tanggal polos
- *   (mis. kegiatan default sebelum pernah diklik "+Kegiatan/Sesi Baru") ikut
- *   menghapus SEMUA baris lama (tanpa IDKegiatan) di tanggal yang sama.
- * - Sekarang "deleteEvent" HANYA mencocokkan isi kolom IDKegiatan secara
- *   PERSIS (exact match), tidak lagi pakai fallback tanggal. Baris lama tanpa
- *   IDKegiatan (kolom benar-benar kosong) TIDAK akan pernah ikut terhapus
- *   otomatis lewat menu ini — kalau perlu dihapus, hapus manual di sheet.
- *
- * PERUBAHAN DI v9:
- * - Tambah action "deleteEvent" (POST): menghapus baris pengaturan kegiatan
- *   di tab "Pengaturan" DAN seluruh baris peserta terkait di tab "Peserta"
- *   yang punya IDKegiatan (atau fallback Tanggal) yang sama.
- *
- * PERUBAHAN DI v8:
- * - Sebelumnya semua data (Pengaturan & Peserta) hanya dibedakan berdasarkan
- *   kolom "Tanggal", sehingga kalau ada 2 kegiatan di TANGGAL YANG SAMA,
- *   datanya saling menimpa satu sama lain.
- * - Sekarang ditambahkan kolom baru "IDKegiatan" (ID unik per kegiatan/sesi,
- *   dibuat otomatis oleh halaman absensi) yang menjadi kunci utama untuk
- *   menyimpan & mengambil data. Kolom "Tanggal" tetap berisi tanggal asli
- *   kegiatan tsb (untuk ditampilkan di form & PDF).
- * - Data lama yang belum punya IDKegiatan tetap otomatis kebaca (fallback ke
- *   kolom Tanggal sebagai ID), jadi TIDAK PERLU migrasi data manual.
- * - "getData" & payload lain sekarang memakai parameter/field "eventId"
- *   (bukan lagi "date" sebagai kunci pencarian). Endpoint tetap menerima
- *   "date" sebagai fallback untuk kompatibilitas versi lama.
- *
- * PERUBAHAN DI v7:
- * - Tambah action "listEvents" (GET): daftar semua kegiatan tersimpan.
- * PERUBAHAN DI v6:
- * - Tambah action "moveParticipantDate".
- * PERUBAHAN DI v5:
- * - Format link gambar TTD pakai "lh3.googleusercontent.com".
- * PERUBAHAN DI v3:
- * - Tab "Pengaturan" punya kolom "JamSelesai".
- *
- * CARA PASANG / UPDATE:
- * 1. Buka spreadsheet yang sudah terhubung ke web app ini.
- * 2. Menu Extensions > Apps Script.
- * 3. Hapus semua kode lama di Code.gs, ganti dengan SELURUH isi file ini.
- * 4. Klik Deploy > Manage deployments > klik ikon pensil (Edit) pada deployment yang aktif.
- * 5. Di "Version", pilih "New version", lalu klik Deploy.
- *    (Jangan buat deployment baru — edit yang sudah ada, supaya URL webhook TIDAK berubah)
- * 6. Kalau diminta otorisasi ulang, klik "Authorize access" dan ikuti langkahnya.
- * 7. Tidak perlu menjalankan fungsi migrasi apa pun untuk update ini — data lama
- *    otomatis tetap terbaca lewat fallback Tanggal.
- * 8. Setelah deploy, hard refresh halaman absensinya (Ctrl+Shift+R) dan pastikan
- *    file index.html yang dipakai juga sudah versi terbaru (yang mendukung
- *    "eventId" & tombol hapus kegiatan), supaya frontend & backend cocok.
- */
-
-var SIGNATURE_FOLDER_NAME = 'TTD Absensi AKSI';
-
-function doGet(e) {
-  var action = e.parameter.action;
-  var eventId = e.parameter.eventId || e.parameter.date; // "date" = fallback versi lama
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  if (action === 'getData' && eventId) {
-    return jsonResponse_({
-      settings: getSettingsForEvent_(ss, eventId),
-      participants: getParticipantsForEvent_(ss, eventId)
-    });
-  }
-
-  if (action === 'listEvents') {
-    return jsonResponse_({ events: listEvents_(ss) });
-  }
-
-  return jsonResponse_({ error: 'Aksi tidak dikenali' });
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Absensi Digital AKSI</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+"use strict";
+const { useState, useRef, useEffect } = React;
+function Icon({ size = 18, className = '', children }) {
+    return (React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className: className }, children));
 }
-
-function doPost(e) {
-  var body = JSON.parse(e.postData.contents);
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  if (body.action === 'saveSettings') {
-    saveSettings_(ss, body);
-  } else if (body.action === 'saveParticipant') {
-    saveParticipant_(ss, body);
-  } else if (body.action === 'deleteParticipant') {
-    deleteParticipant_(ss, body);
-  } else if (body.action === 'moveParticipantDate') {
-    moveParticipantDate_(ss, body);
-  } else if (body.action === 'deleteEvent') {
-    deleteEvent_(ss, body);
-  } else {
-    saveAttendance_(ss, body);
-  }
-  return jsonResponse_({ success: true });
-}
-
-// ================== HELPER ID KEGIATAN ==================
-
-// Ambil ID kegiatan dari satu baris: pakai kolom IDKegiatan kalau ada isinya,
-// kalau kosong (data lama) fallback pakai kolom Tanggal (diformat) sebagai ID —
-// ini sama persis dengan cara kerja versi lama sebelum ada IDKegiatan.
-function rowEventId_(row, tanggalColIdx, idKegiatanColIdx) {
-  var id = row[idKegiatanColIdx];
-  if (id) return String(id);
-  return formatDate_(row[tanggalColIdx]);
-}
-
-// ================== PENGATURAN KEGIATAN (tab "Pengaturan") ==================
-// Kolom: [Tanggal, Judul, Jam, Mode, Lokasi, IzinManualEntry, JamSelesai, IDKegiatan]
-var PENGATURAN_COL = { TANGGAL: 0, JUDUL: 1, JAM: 2, MODE: 3, LOKASI: 4, IZIN_MANUAL: 5, JAM_SELESAI: 6, ID_KEGIATAN: 7 };
-
-function listEvents_(ss) {
-  var sheet = ss.getSheetByName('Pengaturan');
-  if (!sheet) return [];
-  var data = sheet.getDataRange().getValues();
-  var events = [];
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][PENGATURAN_COL.TANGGAL]) {
-      events.push({
-        eventId: rowEventId_(data[i], PENGATURAN_COL.TANGGAL, PENGATURAN_COL.ID_KEGIATAN),
-        date: formatDate_(data[i][PENGATURAN_COL.TANGGAL]),
-        title: data[i][PENGATURAN_COL.JUDUL] || '(Tanpa Judul)'
-      });
-    }
-  }
-  events.sort(function(a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
-  return events;
-}
-
-function getSettingsForEvent_(ss, eventId) {
-  var sheet = ss.getSheetByName('Pengaturan');
-  if (!sheet) return null;
-  var data = sheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    if (rowEventId_(data[i], PENGATURAN_COL.TANGGAL, PENGATURAN_COL.ID_KEGIATAN) === eventId) {
-      return {
-        eventId: eventId,
-        date: formatDate_(data[i][PENGATURAN_COL.TANGGAL]),
-        title: data[i][PENGATURAN_COL.JUDUL],
-        time: data[i][PENGATURAN_COL.JAM],
-        mode: data[i][PENGATURAN_COL.MODE],
-        location: data[i][PENGATURAN_COL.LOKASI],
-        allowManualEntry: data[i][PENGATURAN_COL.IZIN_MANUAL] === true || data[i][PENGATURAN_COL.IZIN_MANUAL] === 'TRUE',
-        endTime: data[i][PENGATURAN_COL.JAM_SELESAI] || ''
-      };
-    }
-  }
-  return null;
-}
-
-function saveSettings_(ss, body) {
-  var sheet = ss.getSheetByName('Pengaturan');
-  if (!sheet) {
-    sheet = ss.insertSheet('Pengaturan');
-    sheet.appendRow(['Tanggal', 'Judul', 'Jam', 'Mode', 'Lokasi', 'IzinManualEntry', 'JamSelesai', 'IDKegiatan']);
-  }
-  var eventId = body.eventId || body.date;
-  var data = sheet.getDataRange().getValues();
-  var rowIndex = -1;
-  for (var i = 1; i < data.length; i++) {
-    if (rowEventId_(data[i], PENGATURAN_COL.TANGGAL, PENGATURAN_COL.ID_KEGIATAN) === eventId) { rowIndex = i + 1; break; }
-  }
-  var row = [body.date, body.title, body.time, body.mode, body.location, body.allowManualEntry, body.endTime || '', eventId];
-  if (rowIndex > 0) {
-    sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
-  } else {
-    sheet.appendRow(row);
-  }
-}
-
-// Hapus SATU kegiatan: baris pengaturannya di tab "Pengaturan" DAN seluruh
-// baris peserta terkait di tab "Peserta".
-//
-// PENTING (perbaikan v10): dulu fungsi ini memakai rowEventId_() yang punya
-// fallback "kalau IDKegiatan kosong, anggap ID = Tanggal". Itu menyebabkan
-// baris LAMA (tanpa IDKegiatan) yang tanggalnya sama ikut IKUT TERHAPUS saat
-// admin menghapus satu kegiatan yang ID-nya juga hanya berupa tanggal polos
-// (mis. kegiatan default sebelum pernah diklik "+Kegiatan/Sesi Baru").
-// Sekarang pencocokan HANYA memakai isi kolom IDKegiatan APA ADANYA (exact
-// match, tanpa fallback), supaya hapus kegiatan tidak pernah menyapu baris
-// lain yang kebetulan berbagi ID fallback yang sama.
-function deleteEvent_(ss, body) {
-  var eventId = body.eventId;
-  if (!eventId) return;
-
-  var settingsSheet = ss.getSheetByName('Pengaturan');
-  if (settingsSheet) {
-    var sData = settingsSheet.getDataRange().getValues();
-    for (var i = sData.length - 1; i >= 1; i--) {
-      if (String(sData[i][PENGATURAN_COL.ID_KEGIATAN]) === String(eventId)) {
-        settingsSheet.deleteRow(i + 1);
-      }
-    }
-  }
-
-  var pesertaSheet = ss.getSheetByName('Peserta');
-  if (pesertaSheet) {
-    var pData = pesertaSheet.getDataRange().getValues();
-    for (var j = pData.length - 1; j >= 1; j--) {
-      if (String(pData[j][COL.ID_KEGIATAN]) === String(eventId)) {
-        pesertaSheet.deleteRow(j + 1);
-      }
-    }
-  }
-}
-
-// ================== DAFTAR PESERTA (tab "Peserta") ==================
-
-var PESERTA_HEADERS = [
-  'ID', 'Tanggal', 'Kegiatan', 'Lokasi', 'Nama', 'Gender', 'Institusi', 'Jabatan',
-  'Telepon', 'BukanDisabilitas', 'Disabilitas', 'DisabilitasLainnya',
-  'TolakSebutkanDisabilitas', 'TandaTanganURL', 'WaktuAbsen', 'IDKegiatan'
+const PenTool = (p) => React.createElement(Icon, { ...p },
+    React.createElement("path", { d: "M12 19l7-7 3 3-7 7-3-3z" }),
+    React.createElement("path", { d: "M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" }),
+    React.createElement("path", { d: "M2 2l7.586 7.586" }),
+    React.createElement("circle", { cx: "11", cy: "11", r: "2" }));
+const CheckCircle = (p) => React.createElement(Icon, { ...p },
+    React.createElement("path", { d: "M22 11.08V12a10 10 0 1 1-5.93-9.14" }),
+    React.createElement("polyline", { points: "22 4 12 14.01 9 11.01" }));
+const Shield = (p) => React.createElement(Icon, { ...p },
+    React.createElement("path", { d: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" }));
+const Plus = (p) => React.createElement(Icon, { ...p },
+    React.createElement("line", { x1: "12", y1: "5", x2: "12", y2: "19" }),
+    React.createElement("line", { x1: "5", y1: "12", x2: "19", y2: "12" }));
+const Trash2 = (p) => React.createElement(Icon, { ...p },
+    React.createElement("polyline", { points: "3 6 5 6 21 6" }),
+    React.createElement("path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }),
+    React.createElement("line", { x1: "10", y1: "11", x2: "10", y2: "17" }),
+    React.createElement("line", { x1: "14", y1: "11", x2: "14", y2: "17" }));
+const X = (p) => React.createElement(Icon, { ...p },
+    React.createElement("line", { x1: "18", y1: "6", x2: "6", y2: "18" }),
+    React.createElement("line", { x1: "6", y1: "6", x2: "18", y2: "18" }));
+const Users = (p) => React.createElement(Icon, { ...p },
+    React.createElement("path", { d: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" }),
+    React.createElement("circle", { cx: "9", cy: "7", r: "4" }),
+    React.createElement("path", { d: "M23 21v-2a4 4 0 0 0-3-3.87" }),
+    React.createElement("path", { d: "M16 3.13a4 4 0 0 1 0 7.75" }));
+const Calendar = (p) => React.createElement(Icon, { ...p },
+    React.createElement("rect", { x: "3", y: "4", width: "18", height: "18", rx: "2", ry: "2" }),
+    React.createElement("line", { x1: "16", y1: "2", x2: "16", y2: "6" }),
+    React.createElement("line", { x1: "8", y1: "2", x2: "8", y2: "6" }),
+    React.createElement("line", { x1: "3", y1: "10", x2: "21", y2: "10" }));
+const MapPin = (p) => React.createElement(Icon, { ...p },
+    React.createElement("path", { d: "M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" }),
+    React.createElement("circle", { cx: "12", cy: "10", r: "3" }));
+const ChevronLeft = (p) => React.createElement(Icon, { ...p },
+    React.createElement("polyline", { points: "15 18 9 12 15 6" }));
+const UserPlus = (p) => React.createElement(Icon, { ...p },
+    React.createElement("path", { d: "M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" }),
+    React.createElement("circle", { cx: "8.5", cy: "7", r: "4" }),
+    React.createElement("line", { x1: "20", y1: "8", x2: "20", y2: "14" }),
+    React.createElement("line", { x1: "23", y1: "11", x2: "17", y2: "11" }));
+const Settings = (p) => React.createElement(Icon, { ...p },
+    React.createElement("circle", { cx: "12", cy: "12", r: "3" }),
+    React.createElement("path", { d: "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" }));
+const Printer = (p) => React.createElement(Icon, { ...p },
+    React.createElement("polyline", { points: "6 9 6 2 18 2 18 9" }),
+    React.createElement("path", { d: "M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" }),
+    React.createElement("rect", { x: "6", y: "14", width: "12", height: "8" }));
+const ImageIcon = (p) => React.createElement(Icon, { ...p },
+    React.createElement("rect", { x: "3", y: "3", width: "18", height: "18", rx: "2", ry: "2" }),
+    React.createElement("circle", { cx: "8.5", cy: "8.5", r: "1.5" }),
+    React.createElement("polyline", { points: "21 15 16 10 5 21" }));
+const CheckSquare = (p) => React.createElement(Icon, { ...p },
+    React.createElement("polyline", { points: "9 11 12 14 22 4" }),
+    React.createElement("path", { d: "M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" }));
+const Clock = (p) => React.createElement(Icon, { ...p },
+    React.createElement("circle", { cx: "12", cy: "12", r: "10" }),
+    React.createElement("polyline", { points: "12 6 12 12 16 14" }));
+const Wifi = (p) => React.createElement(Icon, { ...p },
+    React.createElement("path", { d: "M5 12.55a11 11 0 0 1 14.08 0" }),
+    React.createElement("path", { d: "M1.42 9a16 16 0 0 1 21.16 0" }),
+    React.createElement("path", { d: "M8.53 16.11a6 6 0 0 1 6.95 0" }),
+    React.createElement("line", { x1: "12", y1: "20", x2: "12.01", y2: "20" }));
+const DISABILITY_OPTIONS = [
+    'Disabilitas Fisik',
+    'Disabilitas Netra',
+    'Disabilitas Rungu dan/Wicara',
+    'Disabilitas Intelektual',
+    'Disabilitas Mental (Psikososial)',
+    'Disabilitas Mental (Perkembangan)'
 ];
-var COL = { ID:0, TANGGAL:1, KEGIATAN:2, LOKASI:3, NAMA:4, GENDER:5, INSTITUSI:6, JABATAN:7,
-  TELEPON:8, BUKAN_DISABILITAS:9, DISABILITAS:10, DISABILITAS_LAINNYA:11,
-  TOLAK_SEBUTKAN:12, TTD_URL:13, WAKTU_ABSEN:14, ID_KEGIATAN:15 };
-
-function getParticipantsForEvent_(ss, eventId) {
-  var sheet = ss.getSheetByName('Peserta');
-  if (!sheet) return [];
-  var data = sheet.getDataRange().getValues();
-  var list = [];
-  for (var i = 1; i < data.length; i++) {
-    if (rowEventId_(data[i], COL.TANGGAL, COL.ID_KEGIATAN) === eventId) {
-      list.push({
-        id: data[i][COL.ID],
-        name: data[i][COL.NAMA],
-        gender: data[i][COL.GENDER],
-        institution: data[i][COL.INSTITUSI],
-        role: data[i][COL.JABATAN],
-        phone: data[i][COL.TELEPON],
-        notDisabled: data[i][COL.BUKAN_DISABILITAS] === true || data[i][COL.BUKAN_DISABILITAS] === 'TRUE',
-        disabilities: data[i][COL.DISABILITAS] ? String(data[i][COL.DISABILITAS]).split(',').map(function(s){ return s.trim(); }).filter(Boolean) : [],
-        disabilityOther: data[i][COL.DISABILITAS_LAINNYA] || '',
-        declineDisabilityInfo: data[i][COL.TOLAK_SEBUTKAN] === true || data[i][COL.TOLAK_SEBUTKAN] === 'TRUE',
-        signature: data[i][COL.TTD_URL] || null
-      });
+const GOOGLE_SHEET_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwgE4SLXOjR1I5BDiH5Jt55Fy3rpgCgaCzAoLJIOJwt8mBr6ChljbDrs1BQb_pt4O-60A/exec';
+function isWebhookReady() {
+    return GOOGLE_SHEET_WEBHOOK_URL && !GOOGLE_SHEET_WEBHOOK_URL.includes('PASTE_URL');
+}
+async function postToSheet(payload) {
+    await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(payload),
+    });
+}
+async function syncAttendanceToSheet(participant, meeting) {
+    if (!isWebhookReady()) { console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi.'); return; }
+    try {
+        await postToSheet({
+            eventId: meeting.id || meeting.date,
+            kegiatan: meeting.title,
+            tanggal: meeting.date,
+            lokasi: meeting.location,
+            nama: participant.name,
+            gender: participant.gender,
+            institusi: participant.institution,
+            jabatan: participant.role,
+            telepon: participant.phone,
+            disabilitas: participant.notDisabled
+                ? 'Bukan Disabilitas'
+                : (participant.declineDisabilityInfo
+                    ? 'Tidak bersedia menyebutkan'
+                    : [...(participant.disabilities || []), participant.disabilityOther].filter(Boolean).join(', ')),
+            waktuAbsen: new Date().toISOString(),
+        });
+    } catch (err) { console.error('Gagal mengirim data ke Google Sheets:', err); }
+}
+async function syncSettingsToSheet(meeting) {
+    if (!isWebhookReady()) { console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi.'); return false; }
+    try {
+        await postToSheet({
+            action: 'saveSettings',
+            eventId: meeting.id || meeting.date,
+            date: meeting.date,
+            title: meeting.title,
+            time: meeting.time,
+            endTime: meeting.endTime,
+            mode: meeting.mode,
+            location: meeting.location,
+            allowManualEntry: meeting.allowManualEntry,
+        });
+        return true;
+    } catch (err) { console.error('Gagal menyimpan pengaturan ke Google Sheets:', err); return false; }
+}
+async function syncParticipantToSheet(meeting, participant, opts = {}) {
+    if (!isWebhookReady()) { console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi.'); return false; }
+    try {
+        await postToSheet({
+            action: 'saveParticipant',
+            id: participant.id,
+            eventId: meeting.id || meeting.date,
+            tanggal: meeting.date,
+            kegiatan: meeting.title,
+            lokasi: meeting.location,
+            nama: participant.name,
+            gender: participant.gender,
+            institusi: participant.institution,
+            jabatan: participant.role,
+            telepon: participant.phone,
+            notDisabled: participant.notDisabled,
+            disabilitas: (participant.disabilities || []).join(', '),
+            disabilitasLainnya: participant.disabilityOther || '',
+            tolakSebutkan: participant.declineDisabilityInfo,
+            signature: (!opts.clearSignature && participant.signature && participant.signature.startsWith('data:')) ? participant.signature : '',
+            clearSignature: !!opts.clearSignature,
+            waktuAbsen: participant.signature ? new Date().toISOString() : '',
+        });
+        return true;
+    } catch (err) { console.error('Gagal menyimpan data peserta ke Google Sheets:', err); return false; }
+}
+async function deleteParticipantFromSheet(meeting, participantId) {
+    if (!isWebhookReady()) return false;
+    try {
+        await postToSheet({ action: 'deleteParticipant', id: participantId, eventId: meeting.id || meeting.date, tanggal: meeting.date });
+        return true;
+    } catch (err) { console.error('Gagal menghapus data peserta di Google Sheets:', err); return false; }
+}
+// Menghapus SATU kegiatan/sesi (beserta pengaturan & seluruh pesertanya) di
+// spreadsheet. Perlu handler action 'deleteEvent' di Apps Script (Code.gs)
+// yang menghapus baris-baris terkait eventId ini dari sheet Settings & Peserta.
+async function deleteEventFromSheet(eventId) {
+    if (!isWebhookReady()) return false;
+    try {
+        await postToSheet({ action: 'deleteEvent', eventId });
+        return true;
+    } catch (err) { console.error('Gagal menghapus kegiatan di Google Sheets:', err); return false; }
+}
+// targetEvent: { eventId, date, title, location } — kegiatan/sesi tujuan.
+async function moveParticipantDateInSheet(participantId, targetEvent) {
+    if (!isWebhookReady()) return false;
+    try {
+        await postToSheet({
+            action: 'moveParticipantDate',
+            id: participantId,
+            newEventId: targetEvent.eventId,
+            newDate: targetEvent.date,
+            newKegiatan: targetEvent.title || '',
+            newLokasi: targetEvent.location || ''
+        });
+        return true;
+    } catch (err) { console.error('Gagal memindahkan peserta ke kegiatan lain di Google Sheets:', err); return false; }
+}
+async function fetchAllDataFromSheet(eventId) {
+    if (!isWebhookReady()) return null;
+    try {
+        const url = `${GOOGLE_SHEET_WEBHOOK_URL}?action=getData&eventId=${encodeURIComponent(eventId)}`;
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (!data || data.error) return null;
+        return { settings: data.settings || null, participants: Array.isArray(data.participants) ? data.participants : [] };
+    } catch (err) {
+        console.error('Gagal mengambil data dari Google Sheets:', err);
+        return null;
     }
-  }
-  return list;
 }
-
-function saveParticipant_(ss, body) {
-  var sheet = ss.getSheetByName('Peserta');
-  if (!sheet) {
-    sheet = ss.insertSheet('Peserta');
-    sheet.appendRow(PESERTA_HEADERS);
-  }
-  var eventId = body.eventId || body.tanggal;
-  var data = sheet.getDataRange().getValues();
-  var rowIndex = -1;
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][COL.ID]) === String(body.id)) { rowIndex = i + 1; break; }
-  }
-
-  var signatureUrl = '';
-  if (body.clearSignature) {
-    signatureUrl = '';
-  } else if (body.signature) {
-    signatureUrl = saveSignatureToDrive_(body.id, body.tanggal, body.signature);
-  } else if (rowIndex > 0) {
-    signatureUrl = data[rowIndex - 1][COL.TTD_URL] || '';
-  }
-
-  var row = [
-    body.id, body.tanggal, body.kegiatan, body.lokasi, body.nama, body.gender,
-    body.institusi, body.jabatan, body.telepon, body.notDisabled, body.disabilitas,
-    body.disabilitasLainnya, body.tolakSebutkan, signatureUrl,
-    body.waktuAbsen || (rowIndex > 0 ? data[rowIndex - 1][COL.WAKTU_ABSEN] : ''),
-    eventId
-  ];
-
-  if (rowIndex > 0) {
-    sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
-  } else {
-    sheet.appendRow(row);
-  }
-}
-
-function deleteParticipant_(ss, body) {
-  var sheet = ss.getSheetByName('Peserta');
-  if (!sheet) return;
-  var data = sheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][COL.ID]) === String(body.id)) {
-      sheet.deleteRow(i + 1);
-      break;
+async function fetchEventsList() {
+    if (!isWebhookReady()) return [];
+    try {
+        const url = `${GOOGLE_SHEET_WEBHOOK_URL}?action=listEvents`;
+        const res = await fetch(url);
+        if (!res.ok) return [];
+        const data = await res.json();
+        const list = Array.isArray(data && data.events) ? data.events : [];
+        return list.map(ev => ({ ...ev, date: normalizeDateValue(ev.date), eventId: ev.eventId || ev.date }));
+    } catch (err) {
+        console.error('Gagal mengambil daftar kegiatan:', err);
+        return [];
     }
-  }
 }
-
-// Pindahkan peserta ke KEGIATAN lain (bisa beda tanggal, atau kegiatan lain di
-// tanggal yang sama). Mengubah kolom Tanggal, IDKegiatan, Kegiatan & Lokasi;
-// field lain (nama, institusi, TTD, dst) tetap dipertahankan apa adanya.
-function moveParticipantDate_(ss, body) {
-  var sheet = ss.getSheetByName('Peserta');
-  if (!sheet) return;
-  var data = sheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][COL.ID]) === String(body.id)) {
-      var rowNum = i + 1;
-      sheet.getRange(rowNum, COL.TANGGAL + 1).setValue(body.newDate);
-      if (body.newEventId) sheet.getRange(rowNum, COL.ID_KEGIATAN + 1).setValue(body.newEventId);
-      if (body.newKegiatan !== undefined) sheet.getRange(rowNum, COL.KEGIATAN + 1).setValue(body.newKegiatan);
-      if (body.newLokasi !== undefined) sheet.getRange(rowNum, COL.LOKASI + 1).setValue(body.newLokasi);
-      break;
+// ==========================================
+// PENYIMPANAN DATA LOKAL (per tanggal kegiatan)
+// ==========================================
+const STORAGE_KEY = 'aksiAbsensiDataByDate';
+function loadAllSavedData() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch (err) { console.error('Gagal membaca data tersimpan:', err); return {}; }
+}
+function loadSavedDataForDate(date) {
+    const all = loadAllSavedData();
+    return all[date] || null;
+}
+function saveDataForDate(date, data) {
+    try {
+        const all = loadAllSavedData();
+        all[date] = data;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+        return true;
+    } catch (err) { console.error('Gagal menyimpan data:', err); return false; }
+}
+function removeSavedDataForDate(date) {
+    try {
+        const all = loadAllSavedData();
+        delete all[date];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+        return true;
+    } catch (err) { console.error('Gagal menghapus data tersimpan:', err); return false; }
+}
+// ==========================================
+// TANGGAL & JAM
+// ==========================================
+// Tanggal hari ini menurut zona waktu WIB (bukan UTC), format YYYY-MM-DD.
+// (toISOString() memakai UTC sehingga jam 00.00-06.59 WIB tanggalnya masih kemarin.)
+function getTodayWIB() {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+}
+// Jam sekarang diperlakukan sebagai TEKS biasa (mis. "09.00" atau "09:00 - 12:00").
+// Tidak ada konversi zona waktu lagi. Satu-satunya pengecualian: data lama dari
+// spreadsheet yang berbentuk ISO "1899-12-30T..." dikonversi sekali ke "HH:MM" WIB.
+function normalizeTimeValue(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value !== 'string') return String(value);
+    if (/^1899-12-3\d?T/.test(value) || /^\d{4}-\d{2}-\d{2}T/.test(value)) {
+        const d = new Date(value);
+        if (!isNaN(d.getTime())) {
+            let total = d.getUTCHours() * 60 + d.getUTCMinutes() + 7 * 60;
+            total = ((total % 1440) + 1440) % 1440;
+            return String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+        }
+        return '';
     }
-  }
+    return value; // teks biasa: biarkan apa adanya
 }
-
-// Upload TTD (base64 PNG) ke Google Drive, kembalikan URL yang reliable dijadikan <img>.
-function saveSignatureToDrive_(participantId, date, base64DataUrl) {
-  if (!base64DataUrl) return '';
-  var matches = base64DataUrl.match(/^data:(image\/\w+);base64,(.*)$/);
-  if (!matches) return '';
-  var mimeType = matches[1];
-  var base64 = matches[2];
-  var bytes = Utilities.base64Decode(base64);
-  var blob = Utilities.newBlob(bytes, mimeType, 'ttd_' + date + '_' + participantId + '.png');
-
-  var folder = getOrCreateFolder_(SIGNATURE_FOLDER_NAME);
-  var file = folder.createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  return toDirectImageUrl_(file.getId());
+// Tanggal dari spreadsheet: kalau berupa ISO datetime (UTC), ubah ke tanggal WIB.
+function normalizeDateValue(value) {
+    if (!value) return '';
+    if (typeof value !== 'string') return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    if (value.includes('T')) {
+        const d = new Date(value);
+        if (!isNaN(d.getTime())) {
+            return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+        }
+        return value.split('T')[0];
+    }
+    return value;
 }
-
-// Format lh3.googleusercontent.com jauh lebih konsisten untuk dijadikan <img src>
-// langsung dibanding link "uc?export=view" atau "thumbnail" dari Drive.
-function toDirectImageUrl_(fileId) {
-  return 'https://lh3.googleusercontent.com/d/' + fileId + '=w1000';
+// Format tanggal panjang bahasa Indonesia. timeZone UTC dipakai karena string
+// "YYYY-MM-DD" diparse sebagai tengah malam UTC — supaya tidak bergeser hari.
+function formatDateID(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr + 'T00:00:00Z');
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
 }
-
-function getOrCreateFolder_(name) {
-  var folders = DriveApp.getFoldersByName(name);
-  if (folders.hasNext()) return folders.next();
-  return DriveApp.createFolder(name);
+// ==========================================
+// ID KEGIATAN (eventId) — supaya 1 tanggal bisa punya beberapa kegiatan/sesi
+// ==========================================
+// ID ini TERPISAH dari tanggal kalender (meeting.date). Dipakai sebagai kunci
+// utama untuk penyimpanan lokal & sinkronisasi ke Google Sheets, supaya
+// beberapa kegiatan di tanggal yang sama tidak saling menimpa data.
+function generateEventId(date) {
+    const base = (date || getTodayWIB()).replace(/-/g, '');
+    return `${base}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
-
-// Ambil fileId Drive dari URL TTD lama, format apa pun (v3 "uc?export=view&id=",
-// v4 "thumbnail?id=", atau sudah v5 "lh3.googleusercontent.com/d/ID=...").
-function extractDriveFileId_(url) {
-  if (typeof url !== 'string' || !url) return null;
-  var m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  if (m) return m[1];
-  m = url.match(/lh3\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/);
-  if (m) return m[1];
-  return null;
+function waitForPrintImages(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return Promise.resolve();
+    const imgs = Array.from(container.querySelectorAll('img'));
+    return Promise.all(imgs.map(img => {
+        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+        return new Promise(resolve => {
+            const done = () => resolve();
+            img.addEventListener('load', done, { once: true });
+            img.addEventListener('error', done, { once: true });
+            setTimeout(done, 8000);
+        });
+    }));
 }
-
-// ================== MIGRASI LINK TTD LAMA (jalankan manual SEKALI SAJA) ==================
-function migrateSignatureLinksToLh3() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('Peserta');
-  if (!sheet) {
-    Logger.log('Tab "Peserta" belum ada, tidak ada yang perlu dimigrasi.');
-    return;
-  }
-  var data = sheet.getDataRange().getValues();
-  var updated = 0;
-  for (var i = 1; i < data.length; i++) {
-    var url = data[i][COL.TTD_URL];
-    if (typeof url === 'string' && url && url.indexOf('lh3.googleusercontent.com') === -1) {
-      var fileId = extractDriveFileId_(url);
-      if (fileId) {
-        sheet.getRange(i + 1, COL.TTD_URL + 1).setValue(toDirectImageUrl_(fileId));
-        updated++;
+function App() {
+    // 'select-event' adalah layar pembuka: peserta memilih kegiatan/tanggal dulu
+    // sebelum masuk ke daftar hadir & tanda tangan.
+    const [view, setView] = useState('select-event');
+    const [isAdminAuth, setIsAdminAuth] = useState(false);
+    const [logoError, setLogoError] = useState(false);
+    const [modal, setModal] = useState({ isOpen: false, type: '', message: '', onConfirm: null });
+    const [passwordInput, setPasswordInput] = useState('');
+    // Tanggal hari ini (WIB)
+    const todayStr = getTodayWIB();
+    // Daftar seluruh kegiatan (tanggal + judul) untuk layar pemilihan kegiatan.
+    const [eventsList, setEventsList] = useState([]);
+    const [loadingEvents, setLoadingEvents] = useState(true);
+    const [loadingSelectedEvent, setLoadingSelectedEvent] = useState(false);
+    useEffect(() => {
+        let isMounted = true;
+        fetchEventsList().then(list => { if (isMounted) { setEventsList(list); setLoadingEvents(false); } });
+        return () => { isMounted = false; };
+    }, []);
+    const [meeting, setMeeting] = useState(() => {
+        const saved = loadSavedDataForDate(todayStr);
+        const defaults = {
+            title: '',
+            date: todayStr,
+            // Pakai ID unik (bukan cuma tanggal polos) supaya kegiatan baru ini
+            // TIDAK PERNAH bentrok dengan "ID fallback" data lama di backend
+            // (yang menganggap ID = tanggal kalau kolom IDKegiatan kosong).
+            // Lihat catatan v10 di Code.gs untuk detail bug yang ini perbaiki.
+            id: generateEventId(todayStr),
+            time: '',
+            endTime: '',
+            mode: 'Offline',
+            location: '',
+            allowManualEntry: true
+        };
+        if (saved && saved.meeting) {
+            const merged = { ...defaults, ...saved.meeting };
+            merged.time = normalizeTimeValue(merged.time);
+            merged.endTime = normalizeTimeValue(merged.endTime);
+            merged.date = normalizeDateValue(merged.date) || todayStr;
+            merged.id = merged.id || merged.date;
+            return merged;
+        }
+        return defaults;
+    });
+    const LOGO_AKSI = "data:image/jpeg;base64,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";
+    const [pdfHeader, setPdfHeader] = useState(() => {
+        const saved = loadSavedDataForDate(todayStr);
+        if (saved && saved.pdfHeader) return saved.pdfHeader;
+        return { text: 'DAFTAR HADIR', logo: LOGO_AKSI };
+    });
+    const [participants, setParticipants] = useState(() => {
+        const saved = loadSavedDataForDate(todayStr);
+        if (saved && Array.isArray(saved.participants)) return saved.participants;
+        return [];
+    });
+    const [activeParticipant, setActiveParticipant] = useState(null);
+    const [isPreparingPrint, setIsPreparingPrint] = useState(false);
+    useEffect(() => {
+        const style = document.createElement('style');
+        style.innerHTML = `
+      @media print {
+        @page { size: landscape; margin: 10mm 15mm; }
+        body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        ::-webkit-scrollbar { display: none; }
       }
+      input, textarea, select { font-size: 16px !important; }
+    `;
+        document.head.appendChild(style);
+        return () => document.head.removeChild(style);
+    }, []);
+    useEffect(() => {
+        let isMounted = true;
+        (async () => {
+            const remote = await fetchAllDataFromSheet(todayStr);
+            if (isMounted && remote) {
+                if (remote.settings) {
+                    const s = remote.settings;
+                    setMeeting(prev => ({
+                        ...prev,
+                        ...s,
+                        id: s.eventId || prev.id,
+                        time: normalizeTimeValue(s.time),
+                        endTime: normalizeTimeValue(s.endTime),
+                        date: normalizeDateValue(s.date) || prev.date,
+                    }));
+                }
+                setParticipants(remote.participants);
+            }
+        })();
+        return () => { isMounted = false; };
+    }, []);
+    // Peserta memilih kegiatan dari layar "select-event" — ambil pengaturan +
+    // daftar peserta kegiatan tersebut (dari spreadsheet, atau cache lokal kalau
+    // offline/gagal), lalu masuk ke daftar hadir kegiatan itu.
+    // ev = { eventId, date, title } — satu entri dari daftar kegiatan.
+    const handleSelectEvent = async (ev) => {
+        setLoadingSelectedEvent(true);
+        const eventId = ev.eventId;
+        const remote = await fetchAllDataFromSheet(eventId);
+        const cached = loadSavedDataForDate(eventId);
+        let newMeeting, newParticipants;
+        if (remote && remote.settings) {
+            const s = remote.settings;
+            newMeeting = { title: '', date: ev.date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true, ...s,
+                id: s.eventId || eventId,
+                time: normalizeTimeValue(s.time), endTime: normalizeTimeValue(s.endTime), date: normalizeDateValue(s.date) || ev.date };
+            newParticipants = remote.participants;
+        } else if (cached) {
+            newMeeting = { ...cached.meeting, id: (cached.meeting && cached.meeting.id) || eventId };
+            newParticipants = Array.isArray(cached.participants) ? cached.participants : [];
+        } else {
+            newMeeting = { title: ev.title || '', date: ev.date, id: eventId, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
+            newParticipants = [];
+        }
+        // Jaga-jaga: kalau data pengaturan dari spreadsheet tidak membawa judul
+        // (mis. baris "settings" belum pernah disimpan admin), pakai judul dari
+        // daftar kegiatan (ev.title) supaya nama kegiatan tetap tampil.
+        if (!newMeeting.title) newMeeting.title = ev.title || '';
+        setMeeting(newMeeting);
+        setParticipants(newParticipants);
+        saveDataForDate(eventId, { meeting: newMeeting, pdfHeader, participants: newParticipants });
+        setLoadingSelectedEvent(false);
+        setView('list');
+    };
+    const handleAdminLogin = () => {
+        if (isAdminAuth) {
+            setView('admin');
+        } else {
+            setPasswordInput('');
+            setModal({ isOpen: true, type: 'login', message: 'Masukkan Password Admin untuk melanjutkan' });
+        }
+    };
+    const submitLogin = (e) => {
+        if (e && e.preventDefault) e.preventDefault();
+        if (passwordInput === 'admin123') {
+            setIsAdminAuth(true);
+            setModal({ isOpen: false, type: '', message: '', onConfirm: null });
+            setView('admin');
+        } else {
+            setModal({ isOpen: true, type: 'alert', message: 'Password salah!' });
+        }
+    };
+    const handleSignClick = (participant) => {
+        setActiveParticipant(participant);
+        setView('sign');
+    };
+    const handleSelfRegisterSubmit = (newUserData) => {
+        const newUser = { ...newUserData, id: Date.now(), signature: null };
+        setParticipants(prev => [...prev, newUser]);
+        setActiveParticipant(newUser);
+        setView('sign');
+    };
+    const handleQuickDeleteParticipant = (p) => {
+        setModal({
+            isOpen: true,
+            type: 'confirm',
+            message: `Hapus data "${p.name}" dari daftar hadir?`,
+            onConfirm: () => {
+                setParticipants(prev => prev.filter(x => x.id !== p.id));
+                deleteParticipantFromSheet(meeting, p.id);
+            }
+        });
+    };
+    const handleSaveSignature = (signatureDataUrl) => {
+        const signedParticipant = { ...activeParticipant, signature: signatureDataUrl };
+        setParticipants(prev => prev.map(p => p.id === activeParticipant.id ? signedParticipant : p));
+        syncAttendanceToSheet(signedParticipant, meeting);
+        syncParticipantToSheet(meeting, signedParticipant);
+        setView('thankyou');
+        setTimeout(() => {
+            setView('list');
+            setActiveParticipant(null);
+        }, 2500);
+    };
+    const handleSaveMeetingSettings = async () => {
+        const localSuccess = saveDataForDate(meeting.id, { meeting, pdfHeader, participants });
+        const remoteSuccess = await syncSettingsToSheet(meeting);
+        setModal({
+            isOpen: true,
+            type: 'alert',
+            message: !localSuccess
+                ? 'Gagal menyimpan data di perangkat ini. Coba lagi.'
+                : remoteSuccess
+                    ? `Data kegiatan "${meeting.title || '(tanpa judul)'}" (${meeting.date}) berhasil disimpan dan dikirim ke spreadsheet — akan otomatis muncul di semua perangkat yang membuka kegiatan/sesi ini.`
+                    : `Data tersimpan di perangkat ini, tapi gagal terkirim ke spreadsheet. Pastikan koneksi internet aktif dan Apps Script sudah menggunakan versi terbaru (v8).`
+        });
+    };
+    useEffect(() => {
+        saveDataForDate(meeting.id, { meeting, pdfHeader, participants });
+    }, [participants]);
+    const handlePrint = async () => {
+        setIsPreparingPrint(true);
+        await waitForPrintImages('print-template-root');
+        window.print();
+        setIsPreparingPrint(false);
+    };
+    return (React.createElement("div", { className: "min-h-screen bg-gray-50 font-sans text-gray-800 selection:bg-blue-200 pb-12" },
+        React.createElement("div", { className: "print:hidden" },
+            React.createElement("header", { className: "bg-white border-b shadow-sm sticky top-0 z-10" },
+                React.createElement("div", { className: "max-w-5xl mx-auto px-4 py-4 flex justify-between items-center" },
+                    React.createElement("div", { className: "flex items-center gap-3" },
+                        pdfHeader.logo && !logoError ? (React.createElement("img", { src: pdfHeader.logo, alt: "Logo", className: "w-10 h-10 object-contain rounded-full shadow-sm bg-white", onError: () => setLogoError(true) })) : (React.createElement("div", { className: "w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xl shadow-md" }, "A")),
+                        React.createElement("div", null,
+                            React.createElement("h1", { className: "font-bold text-lg leading-tight text-gray-900" }, "Daftar Hadir"),
+                            React.createElement("p", { className: "text-xs text-gray-500" }, "Absensi Digital Kegiatan"))),
+                    view !== 'list' && view !== 'thankyou' && view !== 'select-event' && (React.createElement("button", { onClick: () => setView('list'), className: "flex items-center gap-1 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-md transition" },
+                        React.createElement(ChevronLeft, { size: 16 }),
+                        " Kembali")))),
+            React.createElement("main", { className: "max-w-5xl mx-auto px-4 py-6" },
+                view === 'select-event' && (React.createElement(EventSelectorView, { eventsList: eventsList, loadingEvents: loadingEvents, loadingSelected: loadingSelectedEvent, todayStr: todayStr, onSelectEvent: handleSelectEvent })),
+                view === 'list' && (React.createElement(ParticipantListView, { meeting: meeting, participants: participants, onSignClick: handleSignClick, onSelfRegisterClick: () => setView('self-register'), isAdminAuth: isAdminAuth, onDeleteClick: handleQuickDeleteParticipant, onChangeEvent: () => setView('select-event') })),
+                view === 'self-register' && (React.createElement(SelfRegisterView, { onSubmit: handleSelfRegisterSubmit, onCancel: () => setView('list') })),
+                view === 'sign' && activeParticipant && (React.createElement(SignatureView, { participant: activeParticipant, onSave: handleSaveSignature, onCancel: () => setView('list'), showAlert: (msg) => setModal({ isOpen: true, type: 'alert', message: msg }) })),
+                view === 'thankyou' && React.createElement(ThankYouView, { participant: activeParticipant }),
+                view === 'admin' && (React.createElement(AdminPortal, { meeting: meeting, setMeeting: setMeeting, participants: participants, setParticipants: setParticipants, pdfHeader: pdfHeader, setPdfHeader: setPdfHeader, showConfirm: (msg, onConfirm) => setModal({ isOpen: true, type: 'confirm', message: msg, onConfirm }), setLogoError: setLogoError, onSaveSettings: handleSaveMeetingSettings, onPrint: handlePrint, isPreparingPrint: isPreparingPrint }))),
+            (view === 'list' || view === 'select-event') && (React.createElement("footer", { className: "max-w-5xl mx-auto px-4 mt-8 text-center text-gray-400" },
+                React.createElement("p", { className: "text-xs mb-2" }, "Pastikan nama Anda terdaftar sebelum menandatangani."),
+                React.createElement("button", { onClick: handleAdminLogin, className: "inline-flex items-center justify-center p-2 opacity-30 hover:opacity-100 transition-opacity bg-gray-200 rounded-full", title: "Portal Admin" },
+                    React.createElement(Settings, { size: 18, className: "text-gray-600" }))))),
+        modal.isOpen && (React.createElement("div", { className: "fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 print:hidden" },
+            React.createElement("div", { className: "bg-white rounded-xl shadow-lg max-w-sm w-full p-6 animate-in zoom-in-95 duration-200 text-left" },
+                React.createElement("h3", { className: "font-bold text-lg mb-2" }, modal.type === 'login' ? 'Login Admin' : modal.type === 'confirm' ? 'Konfirmasi' : 'Perhatian'),
+                React.createElement("p", { className: "text-gray-600 mb-5 text-sm" }, modal.message),
+                modal.type === 'login' && (React.createElement("div", null,
+                    React.createElement("input", { type: "password", autoFocus: true, value: passwordInput, onChange: (e) => setPasswordInput(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter') submitLogin(e); }, className: "w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none mb-5 bg-gray-50", placeholder: "Password..." }),
+                    React.createElement("div", { className: "flex justify-end gap-3" },
+                        React.createElement("button", { type: "button", onClick: () => setModal({ isOpen: false }), className: "px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition" }, "Batal"),
+                        React.createElement("button", { type: "button", onClick: submitLogin, className: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition shadow-sm" }, "Masuk")))),
+                modal.type === 'alert' && (React.createElement("div", { className: "flex justify-end" },
+                    React.createElement("button", { onClick: () => setModal({ isOpen: false }), className: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition shadow-sm" }, "Mengerti"))),
+                modal.type === 'confirm' && (React.createElement("div", { className: "flex justify-end gap-3" },
+                    React.createElement("button", { onClick: () => setModal({ isOpen: false }), className: "px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition" }, "Batal"),
+                    React.createElement("button", { onClick: () => { if (modal.onConfirm) modal.onConfirm(); setModal({ isOpen: false }); }, className: "px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition shadow-sm" }, "Ya, Lanjutkan")))))),
+        React.createElement("div", { id: "print-template-root", className: "hidden print:block bg-white text-black w-full text-sm" },
+            React.createElement(PrintTemplate, { meeting: meeting, participants: participants, pdfHeader: pdfHeader, logoError: logoError }))));
+}
+function DisabilityFormSection({ data, onChange }) {
+    const handleNotDisabled = (e) => {
+        const isNotDisabled = e.target.checked;
+        onChange({
+            ...data,
+            notDisabled: isNotDisabled,
+            disabilities: isNotDisabled ? [] : data.disabilities,
+            disabilityOther: isNotDisabled ? '' : data.disabilityOther,
+            declineDisabilityInfo: isNotDisabled ? false : data.declineDisabilityInfo
+        });
+    };
+    const handleCheck = (option) => {
+        let newDisabilities = [...data.disabilities];
+        if (newDisabilities.includes(option)) {
+            newDisabilities = newDisabilities.filter(d => d !== option);
+        } else {
+            newDisabilities.push(option);
+        }
+        onChange({ ...data, disabilities: newDisabilities, declineDisabilityInfo: false, notDisabled: false });
+    };
+    const handleDecline = () => {
+        onChange({
+            ...data,
+            declineDisabilityInfo: !data.declineDisabilityInfo,
+            disabilities: !data.declineDisabilityInfo ? [] : data.disabilities,
+            disabilityOther: !data.declineDisabilityInfo ? '' : data.disabilityOther,
+            notDisabled: false
+        });
+    };
+    const isDisabledAreaDisabled = data.notDisabled || data.declineDisabilityInfo;
+    return (React.createElement("div", { className: "border border-gray-200 rounded-lg p-4 bg-gray-50/50" },
+        React.createElement("label", { className: "block text-sm font-semibold text-gray-700 mb-3 border-b pb-2" },
+            "Informasi Ragam Disabilitas (Opsional)",
+            React.createElement("span", { className: "block text-xs text-gray-500 font-normal mt-0.5" }, "Pilih salah satu kondisi di bawah ini.")),
+        React.createElement("div", { className: "mb-4 pb-3 border-b border-gray-200" },
+            React.createElement("label", { className: `flex items-center gap-2 cursor-pointer p-2.5 rounded-lg border transition-colors ${data.notDisabled ? 'bg-green-50 border-green-200' : 'bg-white border-gray-300 hover:bg-gray-50'}` },
+                React.createElement("input", { type: "checkbox", checked: data.notDisabled, onChange: handleNotDisabled, className: "w-4 h-4 text-green-600 rounded cursor-pointer" }),
+                React.createElement("span", { className: `text-sm font-medium ${data.notDisabled ? 'text-green-800' : 'text-gray-800'}` }, "Saya Bukan Penyandang Disabilitas"))),
+        React.createElement("div", { className: `transition-opacity duration-200 ${isDisabledAreaDisabled ? 'opacity-40 pointer-events-none grayscale' : ''}` },
+            React.createElement("p", { className: "text-xs text-gray-500 mb-2 font-medium" }, "Jika Anda penyandang disabilitas, mohon pilih ragam berikut (bisa lebih dari satu):"),
+            React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3" }, DISABILITY_OPTIONS.map(opt => (React.createElement("label", { key: opt, className: "flex items-start gap-2 cursor-pointer" },
+                React.createElement("input", { type: "checkbox", checked: data.disabilities.includes(opt), onChange: () => handleCheck(opt), className: "mt-1 text-blue-600 rounded" }),
+                React.createElement("span", { className: "text-sm text-gray-700 leading-tight" }, opt))))),
+            React.createElement("div", { className: "flex flex-col sm:flex-row gap-2 items-start sm:items-center mb-3" },
+                React.createElement("label", { className: "flex items-center gap-2 cursor-pointer whitespace-nowrap" },
+                    React.createElement("input", { type: "checkbox", checked: data.disabilityOther !== '', onChange: (e) => {
+                            onChange({ ...data, disabilityOther: e.target.checked ? ' ' : '', notDisabled: false, declineDisabilityInfo: false });
+                        }, className: "text-blue-600 rounded" }),
+                    React.createElement("span", { className: "text-sm text-gray-700" }, "Lainnya:")),
+                React.createElement("input", { type: "text", value: data.disabilityOther.trim(), onChange: e => onChange({ ...data, disabilityOther: e.target.value }), disabled: data.disabilityOther === '', placeholder: "Sebutkan...", className: "flex-1 w-full sm:w-auto p-1.5 text-sm border border-gray-300 rounded disabled:bg-gray-100 outline-none focus:ring-1 focus:ring-blue-500" }))),
+        React.createElement("div", { className: `border-t pt-3 mt-1 transition-opacity duration-200 ${data.notDisabled ? 'opacity-40 pointer-events-none' : ''}` },
+            React.createElement("label", { className: "flex items-center gap-2 cursor-pointer" },
+                React.createElement("input", { type: "checkbox", checked: data.declineDisabilityInfo, onChange: handleDecline, className: "text-red-500 rounded" }),
+                React.createElement("span", { className: "text-sm font-medium text-gray-700" }, "Tidak bersedia menyebutkan ragam disabilitas")))));
+}
+function ParticipantListView({ meeting, participants, onSignClick, onSelfRegisterClick, isAdminAuth, onDeleteClick, onChangeEvent }) {
+    const formattedDate = formatDateID(meeting.date);
+    return (React.createElement("div", { className: "space-y-6 animate-in fade-in duration-500" },
+        React.createElement("div", { className: "bg-white rounded-xl shadow-sm border border-gray-200 p-5 md:p-6 relative overflow-hidden" },
+            React.createElement("div", { className: "absolute top-0 left-0 w-2 h-full bg-blue-500" }),
+            React.createElement("div", { className: "flex justify-between items-start gap-3 mb-4" },
+                React.createElement("h2", { className: "text-xl font-bold text-gray-900" }, meeting.title),
+                onChangeEvent && (React.createElement("button", { onClick: onChangeEvent, className: "shrink-0 flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-md transition" },
+                    React.createElement(Calendar, { size: 13 }),
+                    " Ganti Kegiatan"))),
+            React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-3 text-sm text-gray-600" },
+                React.createElement("div", { className: "flex items-center gap-2" },
+                    React.createElement(Calendar, { className: "text-blue-500 shrink-0", size: 18 }),
+                    React.createElement("span", { className: "font-medium" }, formattedDate)),
+                meeting.time && (React.createElement("div", { className: "flex items-center gap-2" },
+                    React.createElement(Clock, { className: "text-blue-500 shrink-0", size: 18 }),
+                    React.createElement("span", { className: "font-medium" }, "Pukul " + meeting.time + (meeting.endTime ? " - " + meeting.endTime : "") + " WIB"))),
+                React.createElement("div", { className: "flex items-center gap-2" },
+                    meeting.mode === 'Online' ? React.createElement(Wifi, { className: "text-blue-500 shrink-0", size: 18 }) : React.createElement(MapPin, { className: "text-blue-500 shrink-0", size: 18 }),
+                    React.createElement("span", null, meeting.location)),
+                React.createElement("div", { className: "flex items-center gap-2" },
+                    React.createElement("span", { className: `text-xs font-semibold px-2.5 py-1 rounded-full ${meeting.mode === 'Online' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}` }, meeting.mode === 'Online' ? 'Online (Daring)' : 'Offline (Tatap Muka)')))),
+        React.createElement("div", { className: "bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden" },
+            React.createElement("div", { className: "p-4 bg-gray-50 border-b flex flex-wrap gap-4 justify-between items-center" },
+                React.createElement("h3", { className: "font-semibold text-gray-800 flex items-center gap-2" },
+                    React.createElement(Users, { size: 18 }),
+                    " Daftar Hadir Peserta"),
+                React.createElement("div", { className: "flex items-center gap-3" },
+                    React.createElement("span", { className: "text-xs font-medium bg-blue-100 text-blue-800 px-3 py-1.5 rounded-full" },
+                        participants.filter(p => p.signature).length,
+                        " / ",
+                        participants.length,
+                        " Hadir"),
+                    meeting.allowManualEntry && (React.createElement("button", { onClick: onSelfRegisterClick, className: "flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-sm px-3 py-1.5 rounded-md shadow-sm transition" },
+                        React.createElement(UserPlus, { size: 16 }),
+                        " Isi Kehadiran")))),
+            React.createElement("div", { className: "overflow-x-auto" },
+                React.createElement("table", { className: "w-full text-left text-sm whitespace-nowrap" },
+                    React.createElement("thead", { className: "bg-gray-50 text-gray-600 border-b" },
+                        React.createElement("tr", null,
+                            React.createElement("th", { className: "px-4 py-3 font-semibold text-center w-12" }, "No."),
+                            React.createElement("th", { className: "px-4 py-3 font-semibold" }, "Nama Peserta"),
+                            React.createElement("th", { className: "px-4 py-3 font-semibold text-center hidden md:table-cell" }, "L/P"),
+                            React.createElement("th", { className: "px-4 py-3 font-semibold hidden sm:table-cell" }, "Institusi"),
+                            React.createElement("th", { className: "px-4 py-3 font-semibold text-center w-36" }, "Tanda Tangan"),
+                            isAdminAuth && React.createElement("th", { className: "px-4 py-3 font-semibold text-center w-16" }, "Hapus"))),
+                    React.createElement("tbody", { className: "divide-y divide-gray-100" }, participants.length === 0 ? (React.createElement("tr", null,
+                        React.createElement("td", { colSpan: isAdminAuth ? 6 : 5, className: "px-4 py-12 text-center text-gray-500" }, "Belum ada peserta."))) : (participants.map((p, index) => {
+                        const hasDisData = (p.disabilities && p.disabilities.length > 0) || p.disabilityOther || p.declineDisabilityInfo;
+                        return (React.createElement("tr", { key: p.id, className: "hover:bg-blue-50/30 transition-colors" },
+                            React.createElement("td", { className: "px-4 py-3 text-center text-gray-500" }, index + 1),
+                            React.createElement("td", { className: "px-4 py-3 font-medium text-gray-900" },
+                                p.name,
+                                React.createElement("div", { className: "block sm:hidden text-xs text-gray-500 font-normal mt-0.5" }, p.institution),
+                                p.notDisabled ? (React.createElement("div", { className: "text-[10px] text-green-600 mt-1 flex items-center gap-1" },
+                                    React.createElement(CheckSquare, { size: 10 }),
+                                    " Bukan Disabilitas")) : hasDisData ? (React.createElement("div", { className: "text-[10px] text-blue-600 mt-1 flex items-center gap-1" },
+                                    React.createElement(CheckSquare, { size: 10 }),
+                                    " Data Disabilitas Terisi")) : null),
+                            React.createElement("td", { className: "px-4 py-3 text-center hidden md:table-cell" }, p.gender),
+                            React.createElement("td", { className: "px-4 py-3 hidden sm:table-cell" }, p.institution),
+                            React.createElement("td", { className: "px-4 py-2 text-center" }, p.signature ? (React.createElement("img", { src: p.signature, alt: `TTD ${p.name}`, className: "h-10 object-contain mx-auto" })) : (React.createElement("button", { onClick: () => onSignClick(p), className: "inline-flex items-center justify-center gap-1.5 w-full py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-md shadow-sm transition-colors" },
+                                React.createElement(PenTool, { size: 14 }),
+                                " TTD"))),
+                            isAdminAuth && (React.createElement("td", { className: "px-4 py-2 text-center" },
+                                React.createElement("button", { onClick: () => onDeleteClick(p), title: "Hapus peserta ini", className: "text-red-500 hover:text-red-700 p-1.5 rounded hover:bg-red-50" },
+                                    React.createElement(Trash2, { size: 16 }))))));
+                    }))))))));
+}
+function SelfRegisterView({ onSubmit, onCancel }) {
+    const [formData, setFormData] = useState({
+        name: '', gender: 'L', institution: '', role: '', phone: '',
+        disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false
+    });
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (formData.name.trim()) onSubmit(formData);
+    };
+    return (React.createElement("div", { className: "max-w-lg mx-auto bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden animate-in zoom-in-95 duration-300 mt-8" },
+        React.createElement("div", { className: "bg-blue-600 p-4 text-white text-center" },
+            React.createElement("h3", { className: "font-bold text-lg" }, "Isi Data Kehadiran")),
+        React.createElement("form", { onSubmit: handleSubmit, className: "p-6 space-y-4 max-h-[75vh] overflow-y-auto" },
+            React.createElement("div", null,
+                React.createElement("label", { className: "block text-sm font-medium text-gray-700 mb-1" }, "Nama Lengkap *"),
+                React.createElement("input", { type: "text", required: true, value: formData.name, onChange: e => setFormData({ ...formData, name: e.target.value }), className: "w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none", placeholder: "Masukkan nama Anda" })),
+            React.createElement("div", { className: "flex gap-4" },
+                React.createElement("div", { className: "w-1/3" },
+                    React.createElement("label", { className: "block text-sm font-medium text-gray-700 mb-1" }, "L/P"),
+                    React.createElement("select", { value: formData.gender, onChange: e => setFormData({ ...formData, gender: e.target.value }), className: "w-full p-2.5 border border-gray-300 rounded-lg outline-none bg-white" },
+                        React.createElement("option", { value: "L" }, "L"),
+                        React.createElement("option", { value: "P" }, "P"))),
+                React.createElement("div", { className: "w-2/3" },
+                    React.createElement("label", { className: "block text-sm font-medium text-gray-700 mb-1" }, "No. HP"),
+                    React.createElement("input", { type: "tel", value: formData.phone, onChange: e => setFormData({ ...formData, phone: e.target.value }), className: "w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none", placeholder: "08..." }))),
+            React.createElement("div", { className: "flex gap-4" },
+                React.createElement("div", { className: "w-1/2" },
+                    React.createElement("label", { className: "block text-sm font-medium text-gray-700 mb-1" }, "Institusi/Instansi"),
+                    React.createElement("input", { type: "text", value: formData.institution, onChange: e => setFormData({ ...formData, institution: e.target.value }), className: "w-full p-2.5 border border-gray-300 rounded-lg outline-none" })),
+                React.createElement("div", { className: "w-1/2" },
+                    React.createElement("label", { className: "block text-sm font-medium text-gray-700 mb-1" }, "Jabatan"),
+                    React.createElement("input", { type: "text", value: formData.role, onChange: e => setFormData({ ...formData, role: e.target.value }), className: "w-full p-2.5 border border-gray-300 rounded-lg outline-none" }))),
+            React.createElement(DisabilityFormSection, { data: formData, onChange: setFormData }),
+            React.createElement("div", { className: "pt-4 flex gap-3 sticky bottom-0 bg-white pb-2 mt-4" },
+                React.createElement("button", { type: "button", onClick: onCancel, className: "flex-1 py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg transition" }, "Batal"),
+                React.createElement("button", { type: "submit", className: "flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition shadow-sm flex justify-center items-center gap-2" },
+                    "Lanjut TTD ",
+                    React.createElement(PenTool, { size: 16 }))))));
+}
+function SignatureView({ participant, onSave, onCancel, showAlert }) {
+    const canvasRef = useRef(null);
+    const dimsRef = useRef({ width: 0, height: 250 });
+    const [isDrawing, setIsDrawing] = useState(false);
+    const [hasDrawn, setHasDrawn] = useState(false);
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const setupCanvas = () => {
+            const parent = canvas.parentElement;
+            const cssWidth = parent.clientWidth;
+            const cssHeight = 250;
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = cssWidth * dpr;
+            canvas.height = cssHeight * dpr;
+            canvas.style.width = cssWidth + 'px';
+            canvas.style.height = cssHeight + 'px';
+            dimsRef.current = { width: cssWidth, height: cssHeight };
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.scale(dpr, dpr);
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = '#0f172a';
+        };
+        setupCanvas();
+        window.addEventListener('resize', setupCanvas);
+        window.addEventListener('orientationchange', setupCanvas);
+        return () => {
+            window.removeEventListener('resize', setupCanvas);
+            window.removeEventListener('orientationchange', setupCanvas);
+        };
+    }, []);
+    const getCoordinates = (e, canvas) => {
+        const rect = canvas.getBoundingClientRect();
+        const point = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
+        return { x: point.clientX - rect.left, y: point.clientY - rect.top };
+    };
+    const startDrawing = (e) => {
+        e.preventDefault();
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        const { x, y } = getCoordinates(e, canvas);
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        setIsDrawing(true);
+    };
+    const draw = (e) => {
+        if (!isDrawing) return;
+        e.preventDefault();
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        const { x, y } = getCoordinates(e, canvas);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        setHasDrawn(true);
+    };
+    const stopDrawing = () => setIsDrawing(false);
+    const handleClear = () => {
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        const { width, height } = dimsRef.current;
+        ctx.clearRect(0, 0, width, height);
+        setHasDrawn(false);
+    };
+    const handleSave = () => {
+        if (!hasDrawn) return showAlert('Silakan coret/tanda tangan terlebih dahulu pada area yang disediakan.');
+        onSave(canvasRef.current.toDataURL('image/png'));
+    };
+    return (React.createElement("div", { className: "max-w-xl mx-auto bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden animate-in zoom-in-95 duration-300 mt-4" },
+        React.createElement("div", { className: "p-4 bg-gray-50 border-b flex justify-between items-center" },
+            React.createElement("h3", { className: "font-bold text-gray-800" }, "Tanda Tangan Digital"),
+            React.createElement("button", { onClick: onCancel, className: "text-gray-400 hover:text-gray-600 p-1 bg-white rounded-full shadow-sm border" },
+                React.createElement(X, { size: 18 }))),
+        React.createElement("div", { className: "p-6 space-y-4" },
+            React.createElement("div", { className: "text-center mb-2" },
+                React.createElement("p", { className: "text-sm text-gray-500" }, "Absen untuk:"),
+                React.createElement("p", { className: "text-xl font-bold text-gray-900" }, participant.name)),
+            React.createElement("div", { className: "border-2 border-dashed border-blue-200 rounded-lg bg-blue-50/30 relative overflow-hidden" },
+                React.createElement("canvas", { ref: canvasRef, onMouseDown: startDrawing, onMouseMove: draw, onMouseUp: stopDrawing, onMouseLeave: stopDrawing, onTouchStart: startDrawing, onTouchMove: draw, onTouchEnd: stopDrawing, className: "w-full touch-none cursor-crosshair", style: { touchAction: 'none' } }),
+                !hasDrawn && (React.createElement("div", { className: "absolute inset-0 pointer-events-none flex items-center justify-center text-gray-400 opacity-60" },
+                    React.createElement("span", { className: "text-lg font-medium tracking-wide" }, "Goreskan Tanda Tangan Disini")))),
+            React.createElement("div", { className: "flex gap-3 pt-4" },
+                React.createElement("button", { onClick: handleClear, className: "flex-1 py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-lg transition" }, "Ulangi"),
+                React.createElement("button", { onClick: handleSave, className: `flex-1 py-3 px-4 font-semibold rounded-lg transition text-white shadow-md flex justify-center items-center gap-2 ${hasDrawn ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-300 cursor-not-allowed'}` },
+                    React.createElement(CheckCircle, { size: 18 }),
+                    " Simpan & Hadir")))));
+}
+function ThankYouView({ participant }) {
+    return (React.createElement("div", { className: "max-w-md mx-auto mt-16 bg-white rounded-2xl shadow-lg border border-gray-100 p-10 text-center animate-in slide-in-from-bottom-8 duration-500" },
+        React.createElement("div", { className: "w-24 h-24 bg-green-100 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner" },
+            React.createElement(CheckCircle, { size: 50 })),
+        React.createElement("h2", { className: "text-3xl font-extrabold text-gray-800 mb-3" }, "Terima Kasih!"),
+        React.createElement("p", { className: "text-gray-600 mb-8 text-lg" },
+            "Kehadiran ",
+            React.createElement("strong", null, participant ? participant.name : ''),
+            " tersimpan.")));
+}
+function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHeader, setPdfHeader, showConfirm, setLogoError, onSaveSettings, onPrint, isPreparingPrint }) {
+    const [activeTab, setActiveTab] = useState('settings');
+    const [newParticipant, setNewParticipant] = useState({
+        name: '', gender: 'L', institution: '', role: '', phone: '',
+        disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false
+    });
+    const [eventsList, setEventsList] = useState([]);
+    const [loadingEvents, setLoadingEvents] = useState(false);
+    const todayStr = getTodayWIB();
+    const isViewingToday = meeting.date === todayStr;
+    const loadEventsList = () => {
+        setLoadingEvents(true);
+        fetchEventsList().then(list => { setEventsList(list); setLoadingEvents(false); });
+    };
+    useEffect(() => { loadEventsList(); }, []);
+    // ev = { eventId, date, title } dari eventsList.
+    const switchToEvent = async (ev) => {
+        const eventId = ev.eventId;
+        const remote = await fetchAllDataFromSheet(eventId);
+        let newMeeting, newParticipants, newPdfHeader;
+        const cached = loadSavedDataForDate(eventId);
+        if (remote && remote.settings) {
+            const s = remote.settings;
+            newMeeting = { title: '', date: ev.date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true, ...s,
+                id: s.eventId || eventId,
+                time: normalizeTimeValue(s.time), endTime: normalizeTimeValue(s.endTime), date: normalizeDateValue(s.date) || ev.date };
+            newParticipants = remote.participants;
+            newPdfHeader = (cached && cached.pdfHeader) || pdfHeader;
+        } else if (cached) {
+            newMeeting = { ...cached.meeting, id: (cached.meeting && cached.meeting.id) || eventId };
+            newParticipants = Array.isArray(cached.participants) ? cached.participants : [];
+            newPdfHeader = cached.pdfHeader || pdfHeader;
+        } else {
+            newMeeting = { title: ev.title || '', date: ev.date, id: eventId, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
+            newParticipants = [];
+            newPdfHeader = pdfHeader;
+        }
+        // Sama seperti di layar peserta: fallback ke judul dari daftar kegiatan
+        // kalau data pengaturan dari spreadsheet tidak membawa judul.
+        if (!newMeeting.title) newMeeting.title = ev.title || '';
+        setMeeting(newMeeting);
+        setParticipants(newParticipants);
+        setPdfHeader(newPdfHeader);
+        saveDataForDate(eventId, { meeting: newMeeting, pdfHeader: newPdfHeader, participants: newParticipants });
+        setActiveTab('settings');
+    };
+    // Membuat kegiatan/sesi BARU — tanggal boleh sama dengan kegiatan yang
+    // sedang dibuka, karena ID kegiatannya baru & unik.
+    const startNewEvent = () => {
+        const baseDate = meeting.date || todayStr;
+        const newMeeting = { title: '', date: baseDate, id: generateEventId(baseDate), time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
+        setMeeting(newMeeting);
+        setParticipants([]);
+        setActiveTab('settings');
+    };
+    const handleMeetingChange = (e) => {
+        const { name, value, type, checked } = e.target;
+        setMeeting(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+    };
+    const handleAddParticipant = (e) => {
+        e.preventDefault();
+        if (!newParticipant.name.trim()) return;
+        const newP = { ...newParticipant, id: Date.now(), signature: null };
+        setParticipants(prev => [...prev, newP]);
+        setNewParticipant({ name: '', gender: 'L', institution: '', role: '', phone: '', disabilities: [], disabilityOther: '', declineDisabilityInfo: false, notDisabled: false });
+        syncParticipantToSheet(meeting, newP);
+    };
+    const handleDeleteParticipant = (p) => {
+        showConfirm('Hapus?', () => {
+            setParticipants(arr => arr.filter(x => x.id !== p.id));
+            deleteParticipantFromSheet(meeting, p.id);
+        });
+    };
+    const [movingParticipantId, setMovingParticipantId] = useState(null);
+    const [moveTargetEventId, setMoveTargetEventId] = useState('');
+    const startMoveParticipant = (p) => {
+        setMovingParticipantId(p.id);
+        const firstOther = eventsList.find(ev => ev.eventId !== meeting.id);
+        setMoveTargetEventId(firstOther ? firstOther.eventId : '');
+    };
+    const confirmMoveParticipant = (p) => {
+        const targetEvent = eventsList.find(ev => ev.eventId === moveTargetEventId);
+        if (!targetEvent || targetEvent.eventId === meeting.id) { setMovingParticipantId(null); return; }
+        showConfirm(`Pindahkan data "${p.name}" ke kegiatan "${targetEvent.title || targetEvent.eventId}" (${targetEvent.date})?`, () => {
+            setParticipants(arr => arr.filter(x => x.id !== p.id));
+            moveParticipantDateInSheet(p.id, targetEvent);
+            const targetSaved = loadSavedDataForDate(targetEvent.eventId);
+            const targetParticipants = (targetSaved && Array.isArray(targetSaved.participants)) ? targetSaved.participants : [];
+            saveDataForDate(targetEvent.eventId, {
+                meeting: (targetSaved && targetSaved.meeting) || { title: targetEvent.title || '', date: targetEvent.date, id: targetEvent.eventId, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true },
+                pdfHeader: (targetSaved && targetSaved.pdfHeader) || { text: 'DAFTAR HADIR', logo: '' },
+                participants: [...targetParticipants, p]
+            });
+        });
+        setMovingParticipantId(null);
+    };
+    const handleResetSignatures = () => {
+        showConfirm('Reset semua TTD?', () => {
+            const toReset = participants.filter(x => x.signature);
+            setParticipants(p => p.map(x => ({ ...x, signature: null })));
+            toReset.forEach(x => syncParticipantToSheet(meeting, x, { clearSignature: true }));
+        });
+    };
+    // Hapus kegiatan/sesi dari daftar (beserta seluruh peserta & pengaturannya).
+    const handleDeleteEvent = (ev) => {
+        showConfirm(`Hapus kegiatan "${ev.title || '(tanpa judul)'}" (${ev.date}) beserta seluruh data pesertanya? Tindakan ini tidak bisa dibatalkan.`, async () => {
+            await deleteEventFromSheet(ev.eventId);
+            removeSavedDataForDate(ev.eventId);
+            setEventsList(list => list.filter(e => e.eventId !== ev.eventId));
+            if (ev.eventId === meeting.id) {
+                const remaining = eventsList.filter(e => e.eventId !== ev.eventId);
+                if (remaining.length > 0) {
+                    switchToEvent(remaining[0]);
+                } else {
+                    startNewEvent();
+                }
+            }
+        });
+    };
+    let historyBody;
+    if (loadingEvents) {
+        historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Memuat daftar kegiatan...");
+    } else if (eventsList.length === 0) {
+        historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Belum ada riwayat kegiatan tersimpan, atau Apps Script belum di-update ke versi yang mendukung ini (v9).");
+    } else {
+        const eventRows = eventsList.map(function(ev) {
+            const isCurrent = ev.eventId === meeting.id;
+            return React.createElement("div", { key: ev.eventId, className: "flex items-center justify-between py-3 gap-3" },
+                React.createElement("div", null,
+                    React.createElement("p", { className: "font-medium text-gray-800" }, ev.title || '(Tanpa Judul)'),
+                    React.createElement("p", { className: "text-xs text-gray-500" }, ev.date + (ev.date === todayStr ? ' (Hari ini)' : ''))),
+                React.createElement("div", { className: "flex items-center gap-2 shrink-0" },
+                    React.createElement("button", {
+                        onClick: () => switchToEvent(ev),
+                        disabled: isCurrent,
+                        className: `text-xs px-3 py-1.5 rounded-md font-medium shrink-0 ${isCurrent ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}`
+                    }, isCurrent ? 'Sedang Dilihat' : 'Lihat'),
+                    React.createElement("button", {
+                        onClick: () => handleDeleteEvent(ev),
+                        title: "Hapus kegiatan ini",
+                        className: "text-red-500 hover:text-red-700 p-1.5 rounded hover:bg-red-50"
+                    }, React.createElement(Trash2, { size: 15 }))));
+        });
+        historyBody = React.createElement("div", { className: "divide-y" }, eventRows);
     }
-  }
-  Logger.log('Selesai. ' + updated + ' link TTD berhasil dimigrasi ke format lh3.googleusercontent.com.');
+    const historyTabContent = React.createElement("div", { className: "bg-white rounded-xl border border-gray-200 shadow-sm p-5" },
+        React.createElement("div", { className: "flex flex-wrap justify-between items-center gap-2 mb-4 border-b pb-2" },
+            React.createElement("h3", { className: "font-bold text-gray-800" }, "Riwayat Seluruh Kegiatan"),
+            React.createElement("div", { className: "flex items-center gap-3" },
+                React.createElement("button", { onClick: startNewEvent, className: "text-xs bg-green-600 hover:bg-green-700 text-white font-medium px-3 py-1.5 rounded-md flex items-center gap-1" },
+                    React.createElement(Plus, { size: 14 }), " Kegiatan/Sesi Baru"),
+                React.createElement("button", { onClick: loadEventsList, className: "text-xs text-blue-600 hover:underline" }, "Muat Ulang"))),
+        React.createElement("p", { className: "text-xs text-gray-500 -mt-2 mb-3" }, "Boleh membuat kegiatan baru dengan tanggal yang sama seperti kegiatan lain — akan tetap tersimpan terpisah."),
+        historyBody);
+    const tabBtn = (id, label) => React.createElement("button", { onClick: () => setActiveTab(id), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, label);
+    const inputCls = "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50";
+    return (React.createElement("div", { className: "space-y-6 animate-in fade-in duration-300" },
+        React.createElement("div", { className: "bg-gradient-to-r from-gray-800 to-gray-900 rounded-xl p-6 text-white shadow-md flex justify-between items-center" },
+            React.createElement("div", null,
+                React.createElement("h2", { className: "text-2xl font-bold flex items-center gap-2" },
+                    React.createElement(Shield, { className: "text-blue-400" }),
+                    " Portal Admin"))),
+        React.createElement("div", { className: "flex border-b border-gray-200 overflow-x-auto whitespace-nowrap" },
+            tabBtn('settings', 'Pengaturan & Cetak'),
+            tabBtn('participants', 'Manajemen Data Peserta'),
+            tabBtn('history', 'Riwayat Kegiatan')),
+        !isViewingToday && (React.createElement("div", { className: "bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-2.5 rounded-lg flex flex-wrap items-center justify-between gap-2" },
+            React.createElement("span", null,
+                "Sedang menampilkan kegiatan tanggal ",
+                React.createElement("strong", null, meeting.date),
+                " (bukan hari ini)."),
+            React.createElement("button", { onClick: () => { const todays = eventsList.filter(e => e.date === todayStr); if (todays.length > 0) { switchToEvent(todays[0]); } else { setActiveTab('history'); } }, className: "text-sm font-semibold underline hover:no-underline" }, "Lihat Kegiatan Hari Ini"))),
+        activeTab === 'settings' && (React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-6" },
+            React.createElement("div", { className: "bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4" },
+                React.createElement("h3", { className: "font-bold text-gray-800 border-b pb-2" }, "Detail Kegiatan"),
+                React.createElement("div", null,
+                    React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Nama Kegiatan"),
+                    React.createElement("textarea", { name: "title", value: meeting.title, onChange: handleMeetingChange, rows: "3", className: inputCls })),
+                React.createElement("div", null,
+                    React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Tanggal"),
+                    React.createElement("input", { type: "date", name: "date", value: meeting.date, onChange: handleMeetingChange, className: inputCls })),
+                React.createElement("div", { className: "flex gap-3" },
+                    React.createElement("div", { className: "flex-1" },
+                        React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Jam Mulai (teks)"),
+                        React.createElement("input", { type: "text", name: "time", value: meeting.time, onChange: handleMeetingChange, placeholder: "Contoh: 09.00", className: inputCls })),
+                    React.createElement("div", { className: "flex-1" },
+                        React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Jam Selesai (teks)"),
+                        React.createElement("input", { type: "text", name: "endTime", value: meeting.endTime, onChange: handleMeetingChange, placeholder: "Contoh: 12.00 / selesai", className: inputCls }))),
+                React.createElement("div", null,
+                    React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Pelaksanaan"),
+                    React.createElement("select", { name: "mode", value: meeting.mode, onChange: handleMeetingChange, className: inputCls },
+                        React.createElement("option", { value: "Offline" }, "Offline (Tatap Muka)"),
+                        React.createElement("option", { value: "Online" }, "Online (Daring)"))),
+                React.createElement("div", null,
+                    React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, meeting.mode === 'Online' ? 'Link / Platform Online' : 'Lokasi Kegiatan'),
+                    React.createElement("input", { type: "text", name: "location", value: meeting.location, onChange: handleMeetingChange, placeholder: meeting.mode === 'Online' ? 'Contoh: Zoom Meeting / Google Meet' : 'Contoh: Aula Gedung...', className: inputCls })),
+                React.createElement("label", { className: "flex items-start gap-3 cursor-pointer p-3 mt-2 bg-blue-50 rounded-lg border border-blue-100" },
+                    React.createElement("input", { type: "checkbox", name: "allowManualEntry", checked: meeting.allowManualEntry, onChange: handleMeetingChange, className: "w-4 h-4 mt-0.5 text-blue-600 rounded" }),
+                    React.createElement("div", null,
+                        React.createElement("span", { className: "text-sm font-bold text-blue-900 block" }, "Izinkan Isi Mandiri"))),
+                React.createElement("button", { onClick: onSaveSettings, className: "w-full flex justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium py-3 rounded-lg mt-2" },
+                    React.createElement(CheckCircle, { size: 18 }),
+                    " Simpan Data"),
+                React.createElement("p", { className: "text-xs text-gray-500 text-center -mt-2" }, "Judul, tanggal & lokasi akan tersimpan untuk kegiatan/sesi ini secara terpisah — kegiatan lain di tanggal yang sama tidak akan tertimpa.")),
+            React.createElement("div", { className: "bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4" },
+                React.createElement("h3", { className: "font-bold text-gray-800 border-b pb-2 flex items-center gap-2" },
+                    React.createElement(ImageIcon, { size: 18 }),
+                    " Logo & Judul Cetak"),
+                React.createElement("div", null,
+                    React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Upload Logo (AKSI / Instansi)"),
+                    React.createElement("input", { type: "file", accept: "image/*", onChange: (e) => { const f = e.target.files[0]; if (f) {
+                            const r = new FileReader();
+                            r.onloadend = () => { setPdfHeader(prev => ({ ...prev, logo: r.result })); setLogoError(false); };
+                            r.readAsDataURL(f);
+                        } }, className: "w-full text-sm p-2 border rounded-lg bg-gray-50" }),
+                    pdfHeader.logo && (React.createElement("div", { className: "mt-2 text-xs text-green-600 flex items-center gap-1" },
+                        React.createElement(CheckCircle, { size: 14 }),
+                        " Logo berhasil dipasang"))),
+                React.createElement("div", null,
+                    React.createElement("label", { className: "block text-xs font-semibold text-gray-600 mb-1" }, "Judul Dokumen"),
+                    React.createElement("textarea", { value: pdfHeader.text, onChange: (e) => setPdfHeader(prev => ({ ...prev, text: e.target.value })), rows: "2", className: "w-full text-sm p-2.5 border rounded-lg bg-gray-50" })),
+                React.createElement("button", { onClick: onPrint, disabled: isPreparingPrint, className: `w-full flex justify-center gap-2 text-white font-medium py-3 rounded-lg mt-4 ${isPreparingPrint ? 'bg-indigo-300 cursor-wait' : 'bg-indigo-600 hover:bg-indigo-700'}` },
+                    React.createElement(Printer, { size: 18 }),
+                    isPreparingPrint ? " Menyiapkan Tanda Tangan..." : " Cetak PDF (Landscape)")))),
+        activeTab === 'participants' && (React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-3 gap-6" },
+            React.createElement("div", { className: "md:col-span-1 bg-white p-5 rounded-xl border border-gray-200 shadow-sm max-h-[80vh] overflow-y-auto" },
+                React.createElement("h3", { className: "font-bold text-gray-800 mb-4 border-b pb-2" }, "Tambah Peserta"),
+                React.createElement("form", { onSubmit: handleAddParticipant, className: "space-y-3" },
+                    React.createElement("input", { type: "text", required: true, value: newParticipant.name, onChange: e => setNewParticipant({ ...newParticipant, name: e.target.value }), className: "w-full text-sm p-2 border rounded", placeholder: "Nama *" }),
+                    React.createElement("div", { className: "flex gap-2" },
+                        React.createElement("select", { value: newParticipant.gender, onChange: e => setNewParticipant({ ...newParticipant, gender: e.target.value }), className: "w-1/3 text-sm p-2 border rounded" },
+                            React.createElement("option", { value: "L" }, "L"),
+                            React.createElement("option", { value: "P" }, "P")),
+                        React.createElement("input", { type: "tel", value: newParticipant.phone, onChange: e => setNewParticipant({ ...newParticipant, phone: e.target.value }), className: "w-2/3 text-sm p-2 border rounded", placeholder: "No HP" })),
+                    React.createElement("input", { type: "text", value: newParticipant.institution, onChange: e => setNewParticipant({ ...newParticipant, institution: e.target.value }), className: "w-full text-sm p-2 border rounded", placeholder: "Institusi" }),
+                    React.createElement("input", { type: "text", value: newParticipant.role, onChange: e => setNewParticipant({ ...newParticipant, role: e.target.value }), className: "w-full text-sm p-2 border rounded", placeholder: "Jabatan" }),
+                    React.createElement("div", { className: "mt-4 pt-4 border-t" },
+                        React.createElement(DisabilityFormSection, { data: newParticipant, onChange: setNewParticipant })),
+                    React.createElement("button", { type: "submit", className: "w-full flex justify-center gap-2 bg-gray-800 hover:bg-black text-white text-sm font-medium py-2 px-4 rounded mt-2" },
+                        React.createElement(Plus, { size: 16 }),
+                        " Tambah Data"))),
+            React.createElement("div", { className: "md:col-span-2 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden flex flex-col h-[80vh]" },
+                React.createElement("div", { className: "p-4 border-b flex justify-between bg-gray-50" },
+                    React.createElement("h3", { className: "font-bold text-gray-800" }, "Database Kehadiran"),
+                    React.createElement("div", { className: "flex gap-2" },
+                        React.createElement("button", { onClick: handleResetSignatures, className: "text-xs text-red-600 border px-2 py-1 rounded hover:bg-red-50" }, "Reset TTD"),
+                        React.createElement("button", { onClick: onPrint, disabled: isPreparingPrint, className: `text-xs text-white px-3 py-1 rounded ${isPreparingPrint ? 'bg-indigo-300 cursor-wait' : 'bg-indigo-600'}` }, isPreparingPrint ? 'Menyiapkan...' : 'Cetak PDF'))),
+                React.createElement("div", { className: "overflow-auto flex-1 p-0" },
+                    React.createElement("table", { className: "w-full text-left text-sm" },
+                        React.createElement("thead", { className: "bg-gray-100 text-gray-700 sticky top-0 border-b" },
+                            React.createElement("tr", null,
+                                React.createElement("th", { className: "px-4 py-2" }, "Nama"),
+                                React.createElement("th", { className: "px-4 py-2" }, "Info Disabilitas"),
+                                React.createElement("th", { className: "px-4 py-2 text-center" }, "TTD"),
+                                React.createElement("th", { className: "px-4 py-2 text-center" }, "Pindah Tgl"),
+                                React.createElement("th", { className: "px-4 py-2 text-center" }, "Hapus"))),
+                        React.createElement("tbody", { className: "divide-y" }, participants.map(p => {
+                            const disCount = ((p.disabilities || []).length) + (p.disabilityOther ? 1 : 0);
+                            const otherEvents = eventsList.filter(ev => ev.eventId !== meeting.id);
+                            return (React.createElement("tr", { key: p.id, className: "hover:bg-gray-50" },
+                                React.createElement("td", { className: "px-4 py-2" },
+                                    React.createElement("span", { className: "font-medium" }, p.name),
+                                    React.createElement("div", { className: "text-xs text-gray-500" }, p.institution)),
+                                React.createElement("td", { className: "px-4 py-2 text-xs" }, p.notDisabled ? React.createElement("span", { className: "inline-block bg-green-100 text-green-700 px-2 py-0.5 rounded-full" }, "Bukan Disabilitas")
+                                    : p.declineDisabilityInfo ? React.createElement("span", { className: "text-red-500" }, "Menolak sebut")
+                                        : disCount > 0 ? React.createElement("span", { className: "text-blue-600" }, "Disabilitas (" + disCount + ")")
+                                            : React.createElement("span", { className: "text-gray-400" }, "Belum diisi")),
+                                React.createElement("td", { className: "px-4 py-2 text-center" }, p.signature ? React.createElement("span", { className: "text-green-600 font-bold" }, "\u2713") : '-'),
+                                React.createElement("td", { className: "px-4 py-2 text-center min-w-[140px]" }, movingParticipantId === p.id ? (React.createElement("div", { className: "flex items-center gap-1" },
+                                    React.createElement("select", { value: moveTargetEventId, onChange: e => setMoveTargetEventId(e.target.value), className: "text-xs border rounded p-1 flex-1" },
+                                        otherEvents.length === 0
+                                            ? React.createElement("option", { value: "" }, "Tidak ada kegiatan lain")
+                                            : otherEvents.map(ev => React.createElement("option", { key: ev.eventId, value: ev.eventId }, `${ev.date} — ${ev.title}`))),
+                                    React.createElement("button", { onClick: () => confirmMoveParticipant(p), title: "Konfirmasi pindah", className: "text-green-600 hover:text-green-800" },
+                                        React.createElement(CheckCircle, { size: 16 })),
+                                    React.createElement("button", { onClick: () => setMovingParticipantId(null), title: "Batal", className: "text-gray-400 hover:text-gray-600" },
+                                        React.createElement(X, { size: 14 })))) : (React.createElement("button", { onClick: () => startMoveParticipant(p), title: "Pindahkan ke kegiatan lain", className: "text-blue-500 hover:text-blue-700" },
+                                    React.createElement(Calendar, { size: 16 })))),
+                                React.createElement("td", { className: "px-4 py-2 text-center" },
+                                    React.createElement("button", { onClick: () => handleDeleteParticipant(p), className: "text-red-500" },
+                                        React.createElement(Trash2, { size: 16 })))));
+                        }))))))),
+        activeTab === 'history' && historyTabContent));
 }
-
-// ================== RIWAYAT KEHADIRAN (format lama, tetap dipakai sebagai log) ==================
-
-function saveAttendance_(ss, body) {
-  var sheet = ss.getSheetByName('Kehadiran') || ss.getSheets()[0];
-  sheet.appendRow([
-    body.kegiatan, body.tanggal, body.lokasi, body.nama, body.gender,
-    body.institusi, body.jabatan, body.telepon, body.disabilitas, body.waktuAbsen
-  ]);
+// ==========================================
+// VIEW: PILIH KEGIATAN (layar pembuka sebelum peserta absen)
+// ==========================================
+function EventSelectorView({ eventsList, loadingEvents, loadingSelected, todayStr, onSelectEvent }) {
+    // Sekarang bisa ada LEBIH DARI SATU kegiatan/sesi pada tanggal hari ini.
+    const todayEvents = eventsList.filter(ev => ev.date === todayStr);
+    const otherEvents = eventsList.filter(ev => ev.date !== todayStr).sort((a, b) => a.date < b.date ? 1 : -1);
+    if (loadingSelected) {
+        return React.createElement("div", { className: "text-center py-20 text-gray-500" }, "Memuat data kegiatan...");
+    }
+    return (React.createElement("div", { className: "max-w-2xl mx-auto space-y-6 animate-in fade-in duration-500" },
+        React.createElement("div", { className: "text-center pt-4" },
+            React.createElement("h2", { className: "text-xl font-bold text-gray-900" }, "Pilih Kegiatan"),
+            React.createElement("p", { className: "text-sm text-gray-500 mt-1" }, "Pilih kegiatan/sesi yang sesuai sebelum mengisi kehadiran.")),
+        loadingEvents ? (React.createElement("p", { className: "text-sm text-gray-500 text-center py-10" }, "Memuat daftar kegiatan...")) : (React.createElement(React.Fragment, null,
+            React.createElement("div", null,
+                React.createElement("h3", { className: "text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 px-1" }, "Kegiatan Hari Ini"),
+                todayEvents.length > 0 ? (React.createElement("div", { className: "space-y-3" }, todayEvents.map(ev => (React.createElement("button", { key: ev.eventId, onClick: () => onSelectEvent(ev), className: "w-full text-left bg-white border-2 border-blue-500 rounded-xl p-5 shadow-sm hover:shadow-md hover:bg-blue-50/40 transition flex items-center justify-between gap-4" },
+                    React.createElement("div", null,
+                        React.createElement("p", { className: "font-bold text-gray-900 text-lg leading-snug" }, ev.title),
+                        React.createElement("p", { className: "text-sm text-blue-600 font-medium mt-1" }, formatDateID(ev.date), ev.time ? ` — ${ev.time}` : '')),
+                    React.createElement("span", { className: "shrink-0 bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-lg" }, "Pilih")))))) : (React.createElement("div", { className: "bg-white border border-dashed border-gray-300 rounded-xl p-5 text-center text-sm text-gray-400" }, "Tidak ada kegiatan terjadwal untuk hari ini (", formatDateID(todayStr), ")."))),
+            otherEvents.length > 0 && (React.createElement("div", null,
+                React.createElement("h3", { className: "text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 px-1" }, "Kegiatan Lainnya"),
+                React.createElement("div", { className: "bg-white rounded-xl border border-gray-200 shadow-sm divide-y" }, otherEvents.map(ev => (React.createElement("button", { key: ev.eventId, onClick: () => onSelectEvent(ev), className: "w-full text-left p-4 hover:bg-gray-50 transition flex items-center justify-between gap-4" },
+                    React.createElement("div", null,
+                        React.createElement("p", { className: "font-medium text-gray-800" }, ev.title),
+                        React.createElement("p", { className: "text-xs text-gray-500" }, formatDateID(ev.date))),
+                    React.createElement(ChevronLeft, { size: 16, className: "text-gray-300 rotate-180 shrink-0" }))))))),
+            eventsList.length === 0 && (React.createElement("div", { className: "bg-white border border-dashed border-gray-300 rounded-xl p-8 text-center text-sm text-gray-400" }, "Belum ada kegiatan tersimpan sama sekali."))))));
 }
-
-// ================== HELPER ==================
-
-function formatDate_(value) {
-  if (!value) return '';
-  var d = (value instanceof Date) ? value : new Date(value);
-  if (isNaN(d.getTime())) return String(value);
-  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+function PrintTemplate({ meeting, participants, pdfHeader, logoError }) {
+    const formattedDate = formatDateID(meeting.date);
+    const totalL = participants.filter(p => p.gender === 'L').length;
+    const totalP = participants.filter(p => p.gender === 'P').length;
+    const hasDisability = (p) => !p.notDisabled && ((p.disabilities && p.disabilities.length > 0) || (p.disabilityOther && p.disabilityOther !== ''));
+    const disL = participants.filter(p => p.gender === 'L' && hasDisability(p)).length;
+    const disP = participants.filter(p => p.gender === 'P' && hasDisability(p)).length;
+    const has = (p, opt) => !!(p.disabilities && p.disabilities.includes(opt));
+    const renderCheck = (label, isChecked) => (React.createElement("div", { className: "flex items-start gap-1 text-[8px] leading-[1.1] mb-0.5 break-inside-avoid" },
+        React.createElement("div", { className: `w-2.5 h-2.5 mt-[1px] border border-black shrink-0 ${isChecked ? 'bg-black' : ''}`, style: isChecked ? { WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : {} }),
+        React.createElement("span", null, label)));
+    return (React.createElement("div", { className: "w-full font-sans print-content text-black h-full flex flex-col pt-2" },
+        React.createElement("div", { className: "flex justify-between items-start mb-4 w-full" },
+            React.createElement("div", { className: "flex-1 pr-4 flex gap-6 items-start" },
+                pdfHeader.logo && !logoError && (React.createElement("img", { src: pdfHeader.logo, alt: "Logo", className: "w-[80px] h-[80px] object-contain shrink-0", style: { printColorAdjust: 'exact' } })),
+                React.createElement("div", null,
+                    React.createElement("div", { className: "whitespace-pre-wrap font-extrabold text-2xl tracking-wide mb-4 mt-2" }, pdfHeader.text),
+                    React.createElement("table", { className: "text-[11px] font-medium" },
+                        React.createElement("tbody", null,
+                            React.createElement("tr", null,
+                                React.createElement("td", { className: "pr-4 py-0.5 align-top whitespace-nowrap" }, "Nama Kegiatan/Workshop"),
+                                React.createElement("td", { className: "px-1 py-0.5 align-top" }, ":"),
+                                React.createElement("td", { className: "py-0.5 font-bold uppercase" }, meeting.title)),
+                            React.createElement("tr", null,
+                                React.createElement("td", { className: "pr-4 py-0.5 align-top whitespace-nowrap" }, "Hari & Tanggal"),
+                                React.createElement("td", { className: "px-1 py-0.5 align-top" }, ":"),
+                                React.createElement("td", { className: "py-0.5" },
+                                    formattedDate,
+                                    meeting.time ? `, Pukul ${meeting.time}${meeting.endTime ? ' - ' + meeting.endTime : ''} WIB` : '')),
+                            React.createElement("tr", null,
+                                React.createElement("td", { className: "pr-4 py-0.5 align-top whitespace-nowrap" }, "Pelaksanaan"),
+                                React.createElement("td", { className: "px-1 py-0.5 align-top" }, ":"),
+                                React.createElement("td", { className: "py-0.5" }, meeting.mode === 'Online' ? 'Online (Daring)' : 'Offline (Tatap Muka)')),
+                            React.createElement("tr", null,
+                                React.createElement("td", { className: "pr-4 py-0.5 align-top whitespace-nowrap" }, meeting.mode === 'Online' ? 'Link/Platform' : 'Lokasi Kegiatan'),
+                                React.createElement("td", { className: "px-1 py-0.5 align-top" }, ":"),
+                                React.createElement("td", { className: "py-0.5" }, meeting.location)))))),
+            React.createElement("div", { className: "w-64 shrink-0 mt-8" },
+                React.createElement("table", { className: "w-full border-collapse border border-black text-[10px]" },
+                    React.createElement("tbody", null,
+                        React.createElement("tr", null,
+                            React.createElement("td", { className: "border border-black p-1 font-bold bg-gray-200 w-1/2" }, "Total Peserta"),
+                            React.createElement("td", { className: "border border-black p-1 font-bold bg-gray-200 text-center w-1/2" }, "ASOSIASI KEPALA SEKOLAH INDONESIA")),
+                        React.createElement("tr", null,
+                            React.createElement("td", { className: "border border-black p-1" }, "Laki-laki"),
+                            React.createElement("td", { className: "border border-black p-1 text-center font-bold" }, totalL)),
+                        React.createElement("tr", null,
+                            React.createElement("td", { className: "border border-black p-1" }, "Perempuan"),
+                            React.createElement("td", { className: "border border-black p-1 text-center font-bold" }, totalP)),
+                        React.createElement("tr", null,
+                            React.createElement("td", { className: "border border-black p-1" }, "Total"),
+                            React.createElement("td", { className: "border border-black p-1 text-center font-bold bg-gray-100" }, totalL + totalP)),
+                        React.createElement("tr", null,
+                            React.createElement("td", { colSpan: "2", className: "border border-black p-1 font-bold bg-gray-200" }, "Total Disabilitas")),
+                        React.createElement("tr", null,
+                            React.createElement("td", { className: "border border-black p-1" }, "Laki-laki"),
+                            React.createElement("td", { className: "border border-black p-1 text-center font-bold" }, disL)),
+                        React.createElement("tr", null,
+                            React.createElement("td", { className: "border border-black p-1" }, "Perempuan"),
+                            React.createElement("td", { className: "border border-black p-1 text-center font-bold" }, disP)),
+                        React.createElement("tr", null,
+                            React.createElement("td", { className: "border border-black p-1" }, "Total"),
+                            React.createElement("td", { className: "border border-black p-1 text-center font-bold bg-gray-100" }, disL + disP)))))),
+        React.createElement("div", { className: "w-full flex-1" },
+            React.createElement("table", { className: "w-full border-collapse border border-black text-[10px]" },
+                React.createElement("thead", { className: "bg-gray-800 text-white text-[10px]" },
+                    React.createElement("tr", null,
+                        React.createElement("th", { className: "border border-gray-400 p-1.5 text-center w-[3%] font-bold" }, "No."),
+                        React.createElement("th", { className: "border border-gray-400 p-1.5 w-[12%] font-bold text-center" }, "Nama Peserta"),
+                        React.createElement("th", { className: "border border-gray-400 p-1.5 text-center w-[4%] font-bold" }, "L/P"),
+                        React.createElement("th", { className: "border border-gray-400 p-1.5 w-[11%] font-bold text-center" }, "Institusi"),
+                        React.createElement("th", { className: "border border-gray-400 p-1.5 w-[10%] font-bold text-center" }, "Jabatan"),
+                        React.createElement("th", { className: "border border-gray-400 p-1.5 w-[10%] font-bold text-center" }, "Handphone"),
+                        React.createElement("th", { className: "border border-gray-400 p-1 w-[38%] font-bold text-center leading-tight" }, "Jika Anda Penyandang Disabilitas, Mohon berikan informasi Ragam Disabilitas di bawah ini: (bisa pilih lebih dari satu)"),
+                        React.createElement("th", { className: "border border-gray-400 p-1.5 text-center w-[12%]", colSpan: "2" }, "Tanda Tangan"))),
+                React.createElement("tbody", { className: "text-black" }, participants.map((p, i) => {
+                    return (React.createElement("tr", { key: p.id },
+                        React.createElement("td", { className: "border border-black p-1 text-center align-middle bg-gray-100 font-bold" }, i + 1),
+                        React.createElement("td", { className: "border border-black p-1.5 align-middle uppercase font-bold text-[11px]" }, p.name),
+                        React.createElement("td", { className: "border border-black p-1 text-center align-middle" }, p.gender),
+                        React.createElement("td", { className: "border border-black p-1.5 align-middle" }, p.institution),
+                        React.createElement("td", { className: "border border-black p-1.5 align-middle" }, p.role),
+                        React.createElement("td", { className: "border border-black p-1.5 align-middle text-center" }, p.phone),
+                        React.createElement("td", { className: "border border-black p-1 align-top bg-gray-50/30" }, p.notDisabled ? (React.createElement("div", { className: "flex h-full items-center justify-center text-[10px] text-gray-500 italic" }, "- (Bukan Disabilitas) -")) : (React.createElement("div", { className: "grid grid-cols-3 gap-1" },
+                            React.createElement("div", null,
+                                renderCheck('Disabilitas Fisik', has(p, 'Disabilitas Fisik')),
+                                renderCheck('Disabilitas Netra', has(p, 'Disabilitas Netra')),
+                                renderCheck('Disabilitas Rungu dan/Wicara', has(p, 'Disabilitas Rungu dan/Wicara'))),
+                            React.createElement("div", null,
+                                renderCheck('Disabilitas Intelektual', has(p, 'Disabilitas Intelektual')),
+                                renderCheck('Disabilitas Mental (Psikososial)', has(p, 'Disabilitas Mental (Psikososial)')),
+                                renderCheck('Disabilitas Mental (Perkembangan)', has(p, 'Disabilitas Mental (Perkembangan)'))),
+                            React.createElement("div", null,
+                                React.createElement("div", { className: "flex items-start gap-1 text-[8px] leading-[1.1] mb-0.5" },
+                                    React.createElement("div", { className: `w-2.5 h-2.5 mt-[1px] border border-black shrink-0 ${p.disabilityOther ? 'bg-black' : ''}`, style: p.disabilityOther ? { WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : {} }),
+                                    React.createElement("span", { className: "truncate" },
+                                        "Lainnya: ",
+                                        p.disabilityOther ? React.createElement("u", { className: "font-bold" }, p.disabilityOther) : '......................')),
+                                renderCheck('Tidak bersedia menyebutkan', p.declineDisabilityInfo))))),
+                        React.createElement("td", { className: `border border-black p-1 align-middle relative h-[50px] w-[6%] ${i % 2 === 0 ? '' : 'border-r-0'}` }, i % 2 === 0 && (React.createElement("div", { className: "w-full h-full relative flex items-center justify-center" },
+                            React.createElement("span", { className: "absolute top-0 left-0.5 text-[9px] text-gray-500 font-bold" }, (i + 1) + "."),
+                            p.signature && React.createElement("img", { src: p.signature, alt: "TTD", className: "max-h-full max-w-full object-contain", style: { printColorAdjust: 'exact' } })))),
+                        React.createElement("td", { className: `border border-black p-1 align-middle relative h-[50px] w-[6%] ${i % 2 !== 0 ? '' : 'border-l-0'}` }, i % 2 !== 0 && (React.createElement("div", { className: "w-full h-full relative flex items-center justify-center" },
+                            React.createElement("span", { className: "absolute top-0 left-0.5 text-[9px] text-gray-500 font-bold" }, (i + 1) + "."),
+                            p.signature && React.createElement("img", { src: p.signature, alt: "TTD", className: "max-h-full max-w-full object-contain", style: { printColorAdjust: 'exact' } }))))));
+                }))))));
 }
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App, null));
 
-function jsonResponse_(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
-}
+</script>
+</body>
+</html>
