@@ -171,6 +171,16 @@ async function deleteParticipantFromSheet(meeting, participantId) {
         return true;
     } catch (err) { console.error('Gagal menghapus data peserta di Google Sheets:', err); return false; }
 }
+// Menghapus SATU kegiatan/sesi (beserta pengaturan & seluruh pesertanya) di
+// spreadsheet. Perlu handler action 'deleteEvent' di Apps Script (Code.gs)
+// yang menghapus baris-baris terkait eventId ini dari sheet Settings & Peserta.
+async function deleteEventFromSheet(eventId) {
+    if (!isWebhookReady()) return false;
+    try {
+        await postToSheet({ action: 'deleteEvent', eventId });
+        return true;
+    } catch (err) { console.error('Gagal menghapus kegiatan di Google Sheets:', err); return false; }
+}
 // targetEvent: { eventId, date, title, location } — kegiatan/sesi tujuan.
 async function moveParticipantDateInSheet(participantId, targetEvent) {
     if (!isWebhookReady()) return false;
@@ -235,6 +245,14 @@ function saveDataForDate(date, data) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
         return true;
     } catch (err) { console.error('Gagal menyimpan data:', err); return false; }
+}
+function removeSavedDataForDate(date) {
+    try {
+        const all = loadAllSavedData();
+        delete all[date];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+        return true;
+    } catch (err) { console.error('Gagal menghapus data tersimpan:', err); return false; }
 }
 // ==========================================
 // TANGGAL & JAM
@@ -418,6 +436,10 @@ function App() {
             newMeeting = { title: ev.title || '', date: ev.date, id: eventId, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
             newParticipants = [];
         }
+        // Jaga-jaga: kalau data pengaturan dari spreadsheet tidak membawa judul
+        // (mis. baris "settings" belum pernah disimpan admin), pakai judul dari
+        // daftar kegiatan (ev.title) supaya nama kegiatan tetap tampil.
+        if (!newMeeting.title) newMeeting.title = ev.title || '';
         setMeeting(newMeeting);
         setParticipants(newParticipants);
         saveDataForDate(eventId, { meeting: newMeeting, pdfHeader, participants: newParticipants });
@@ -835,6 +857,9 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             newParticipants = [];
             newPdfHeader = pdfHeader;
         }
+        // Sama seperti di layar peserta: fallback ke judul dari daftar kegiatan
+        // kalau data pengaturan dari spreadsheet tidak membawa judul.
+        if (!newMeeting.title) newMeeting.title = ev.title || '';
         setMeeting(newMeeting);
         setParticipants(newParticipants);
         setPdfHeader(newPdfHeader);
@@ -898,23 +923,45 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             toReset.forEach(x => syncParticipantToSheet(meeting, x, { clearSignature: true }));
         });
     };
+    // Hapus kegiatan/sesi dari daftar (beserta seluruh peserta & pengaturannya).
+    const handleDeleteEvent = (ev) => {
+        showConfirm(`Hapus kegiatan "${ev.title || '(tanpa judul)'}" (${ev.date}) beserta seluruh data pesertanya? Tindakan ini tidak bisa dibatalkan.`, async () => {
+            await deleteEventFromSheet(ev.eventId);
+            removeSavedDataForDate(ev.eventId);
+            setEventsList(list => list.filter(e => e.eventId !== ev.eventId));
+            if (ev.eventId === meeting.id) {
+                const remaining = eventsList.filter(e => e.eventId !== ev.eventId);
+                if (remaining.length > 0) {
+                    switchToEvent(remaining[0]);
+                } else {
+                    startNewEvent();
+                }
+            }
+        });
+    };
     let historyBody;
     if (loadingEvents) {
         historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Memuat daftar kegiatan...");
     } else if (eventsList.length === 0) {
-        historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Belum ada riwayat kegiatan tersimpan, atau Apps Script belum di-update ke versi yang mendukung ini (v8).");
+        historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Belum ada riwayat kegiatan tersimpan, atau Apps Script belum di-update ke versi yang mendukung ini (v9).");
     } else {
         const eventRows = eventsList.map(function(ev) {
             const isCurrent = ev.eventId === meeting.id;
             return React.createElement("div", { key: ev.eventId, className: "flex items-center justify-between py-3 gap-3" },
                 React.createElement("div", null,
-                    React.createElement("p", { className: "font-medium text-gray-800" }, ev.title),
+                    React.createElement("p", { className: "font-medium text-gray-800" }, ev.title || '(Tanpa Judul)'),
                     React.createElement("p", { className: "text-xs text-gray-500" }, ev.date + (ev.date === todayStr ? ' (Hari ini)' : ''))),
-                React.createElement("button", {
-                    onClick: () => switchToEvent(ev),
-                    disabled: isCurrent,
-                    className: `text-xs px-3 py-1.5 rounded-md font-medium shrink-0 ${isCurrent ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}`
-                }, isCurrent ? 'Sedang Dilihat' : 'Lihat'));
+                React.createElement("div", { className: "flex items-center gap-2 shrink-0" },
+                    React.createElement("button", {
+                        onClick: () => switchToEvent(ev),
+                        disabled: isCurrent,
+                        className: `text-xs px-3 py-1.5 rounded-md font-medium shrink-0 ${isCurrent ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}`
+                    }, isCurrent ? 'Sedang Dilihat' : 'Lihat'),
+                    React.createElement("button", {
+                        onClick: () => handleDeleteEvent(ev),
+                        title: "Hapus kegiatan ini",
+                        className: "text-red-500 hover:text-red-700 p-1.5 rounded hover:bg-red-50"
+                    }, React.createElement(Trash2, { size: 15 }))));
         });
         historyBody = React.createElement("div", { className: "divide-y" }, eventRows);
     }
