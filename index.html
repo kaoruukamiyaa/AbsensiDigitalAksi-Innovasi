@@ -103,6 +103,7 @@ async function syncAttendanceToSheet(participant, meeting) {
     if (!isWebhookReady()) { console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi.'); return; }
     try {
         await postToSheet({
+            eventId: meeting.id || meeting.date,
             kegiatan: meeting.title,
             tanggal: meeting.date,
             lokasi: meeting.location,
@@ -125,6 +126,7 @@ async function syncSettingsToSheet(meeting) {
     try {
         await postToSheet({
             action: 'saveSettings',
+            eventId: meeting.id || meeting.date,
             date: meeting.date,
             title: meeting.title,
             time: meeting.time,
@@ -142,6 +144,7 @@ async function syncParticipantToSheet(meeting, participant, opts = {}) {
         await postToSheet({
             action: 'saveParticipant',
             id: participant.id,
+            eventId: meeting.id || meeting.date,
             tanggal: meeting.date,
             kegiatan: meeting.title,
             lokasi: meeting.location,
@@ -164,21 +167,29 @@ async function syncParticipantToSheet(meeting, participant, opts = {}) {
 async function deleteParticipantFromSheet(meeting, participantId) {
     if (!isWebhookReady()) return false;
     try {
-        await postToSheet({ action: 'deleteParticipant', id: participantId, tanggal: meeting.date });
+        await postToSheet({ action: 'deleteParticipant', id: participantId, eventId: meeting.id || meeting.date, tanggal: meeting.date });
         return true;
     } catch (err) { console.error('Gagal menghapus data peserta di Google Sheets:', err); return false; }
 }
-async function moveParticipantDateInSheet(participantId, newDate) {
+// targetEvent: { eventId, date, title, location } — kegiatan/sesi tujuan.
+async function moveParticipantDateInSheet(participantId, targetEvent) {
     if (!isWebhookReady()) return false;
     try {
-        await postToSheet({ action: 'moveParticipantDate', id: participantId, newDate: newDate });
+        await postToSheet({
+            action: 'moveParticipantDate',
+            id: participantId,
+            newEventId: targetEvent.eventId,
+            newDate: targetEvent.date,
+            newKegiatan: targetEvent.title || '',
+            newLokasi: targetEvent.location || ''
+        });
         return true;
-    } catch (err) { console.error('Gagal memindahkan tanggal peserta di Google Sheets:', err); return false; }
+    } catch (err) { console.error('Gagal memindahkan peserta ke kegiatan lain di Google Sheets:', err); return false; }
 }
-async function fetchAllDataFromSheet(date) {
+async function fetchAllDataFromSheet(eventId) {
     if (!isWebhookReady()) return null;
     try {
-        const url = `${GOOGLE_SHEET_WEBHOOK_URL}?action=getData&date=${encodeURIComponent(date)}`;
+        const url = `${GOOGLE_SHEET_WEBHOOK_URL}?action=getData&eventId=${encodeURIComponent(eventId)}`;
         const res = await fetch(url);
         if (!res.ok) return null;
         const data = await res.json();
@@ -197,7 +208,7 @@ async function fetchEventsList() {
         if (!res.ok) return [];
         const data = await res.json();
         const list = Array.isArray(data && data.events) ? data.events : [];
-        return list.map(ev => ({ ...ev, date: normalizeDateValue(ev.date) }));
+        return list.map(ev => ({ ...ev, date: normalizeDateValue(ev.date), eventId: ev.eventId || ev.date }));
     } catch (err) {
         console.error('Gagal mengambil daftar kegiatan:', err);
         return [];
@@ -272,6 +283,16 @@ function formatDateID(dateStr) {
     if (isNaN(d.getTime())) return dateStr;
     return d.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
 }
+// ==========================================
+// ID KEGIATAN (eventId) — supaya 1 tanggal bisa punya beberapa kegiatan/sesi
+// ==========================================
+// ID ini TERPISAH dari tanggal kalender (meeting.date). Dipakai sebagai kunci
+// utama untuk penyimpanan lokal & sinkronisasi ke Google Sheets, supaya
+// beberapa kegiatan di tanggal yang sama tidak saling menimpa data.
+function generateEventId(date) {
+    const base = (date || getTodayWIB()).replace(/-/g, '');
+    return `${base}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
 function waitForPrintImages(containerId) {
     const container = document.getElementById(containerId);
     if (!container) return Promise.resolve();
@@ -310,6 +331,7 @@ function App() {
         const defaults = {
             title: '',
             date: todayStr,
+            id: todayStr,
             time: '',
             endTime: '',
             mode: 'Offline',
@@ -321,6 +343,7 @@ function App() {
             merged.time = normalizeTimeValue(merged.time);
             merged.endTime = normalizeTimeValue(merged.endTime);
             merged.date = normalizeDateValue(merged.date) || todayStr;
+            merged.id = merged.id || merged.date;
             return merged;
         }
         return defaults;
@@ -361,6 +384,7 @@ function App() {
                     setMeeting(prev => ({
                         ...prev,
                         ...s,
+                        id: s.eventId || prev.id,
                         time: normalizeTimeValue(s.time),
                         endTime: normalizeTimeValue(s.endTime),
                         date: normalizeDateValue(s.date) || prev.date,
@@ -374,26 +398,29 @@ function App() {
     // Peserta memilih kegiatan dari layar "select-event" — ambil pengaturan +
     // daftar peserta kegiatan tersebut (dari spreadsheet, atau cache lokal kalau
     // offline/gagal), lalu masuk ke daftar hadir kegiatan itu.
-    const handleSelectEvent = async (date) => {
+    // ev = { eventId, date, title } — satu entri dari daftar kegiatan.
+    const handleSelectEvent = async (ev) => {
         setLoadingSelectedEvent(true);
-        const remote = await fetchAllDataFromSheet(date);
-        const cached = loadSavedDataForDate(date);
+        const eventId = ev.eventId;
+        const remote = await fetchAllDataFromSheet(eventId);
+        const cached = loadSavedDataForDate(eventId);
         let newMeeting, newParticipants;
         if (remote && remote.settings) {
             const s = remote.settings;
-            newMeeting = { title: '', date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true, ...s,
-                time: normalizeTimeValue(s.time), endTime: normalizeTimeValue(s.endTime), date: normalizeDateValue(s.date) || date };
+            newMeeting = { title: '', date: ev.date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true, ...s,
+                id: s.eventId || eventId,
+                time: normalizeTimeValue(s.time), endTime: normalizeTimeValue(s.endTime), date: normalizeDateValue(s.date) || ev.date };
             newParticipants = remote.participants;
         } else if (cached) {
-            newMeeting = cached.meeting;
+            newMeeting = { ...cached.meeting, id: (cached.meeting && cached.meeting.id) || eventId };
             newParticipants = Array.isArray(cached.participants) ? cached.participants : [];
         } else {
-            newMeeting = { title: '', date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
+            newMeeting = { title: ev.title || '', date: ev.date, id: eventId, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
             newParticipants = [];
         }
         setMeeting(newMeeting);
         setParticipants(newParticipants);
-        saveDataForDate(date, { meeting: newMeeting, pdfHeader, participants: newParticipants });
+        saveDataForDate(eventId, { meeting: newMeeting, pdfHeader, participants: newParticipants });
         setLoadingSelectedEvent(false);
         setView('list');
     };
@@ -448,7 +475,7 @@ function App() {
         }, 2500);
     };
     const handleSaveMeetingSettings = async () => {
-        const localSuccess = saveDataForDate(meeting.date, { meeting, pdfHeader, participants });
+        const localSuccess = saveDataForDate(meeting.id, { meeting, pdfHeader, participants });
         const remoteSuccess = await syncSettingsToSheet(meeting);
         setModal({
             isOpen: true,
@@ -456,12 +483,12 @@ function App() {
             message: !localSuccess
                 ? 'Gagal menyimpan data di perangkat ini. Coba lagi.'
                 : remoteSuccess
-                    ? `Data kegiatan untuk tanggal ${meeting.date} berhasil disimpan dan dikirim ke spreadsheet — akan otomatis muncul di semua perangkat yang membuka halaman ini pada tanggal yang sama.`
-                    : `Data tersimpan di perangkat ini, tapi gagal terkirim ke spreadsheet. Pastikan koneksi internet aktif dan Apps Script sudah menggunakan versi terbaru.`
+                    ? `Data kegiatan "${meeting.title || '(tanpa judul)'}" (${meeting.date}) berhasil disimpan dan dikirim ke spreadsheet — akan otomatis muncul di semua perangkat yang membuka kegiatan/sesi ini.`
+                    : `Data tersimpan di perangkat ini, tapi gagal terkirim ke spreadsheet. Pastikan koneksi internet aktif dan Apps Script sudah menggunakan versi terbaru (v8).`
         });
     };
     useEffect(() => {
-        saveDataForDate(meeting.date, { meeting, pdfHeader, participants });
+        saveDataForDate(meeting.id, { meeting, pdfHeader, participants });
     }, [participants]);
     const handlePrint = async () => {
         setIsPreparingPrint(true);
@@ -786,29 +813,41 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
         fetchEventsList().then(list => { setEventsList(list); setLoadingEvents(false); });
     };
     useEffect(() => { loadEventsList(); }, []);
-    const switchToDate = async (date) => {
-        const remote = await fetchAllDataFromSheet(date);
+    // ev = { eventId, date, title } dari eventsList.
+    const switchToEvent = async (ev) => {
+        const eventId = ev.eventId;
+        const remote = await fetchAllDataFromSheet(eventId);
         let newMeeting, newParticipants, newPdfHeader;
-        const cached = loadSavedDataForDate(date);
+        const cached = loadSavedDataForDate(eventId);
         if (remote && remote.settings) {
             const s = remote.settings;
-            newMeeting = { title: '', date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true, ...s,
-                time: normalizeTimeValue(s.time), endTime: normalizeTimeValue(s.endTime), date: normalizeDateValue(s.date) || date };
+            newMeeting = { title: '', date: ev.date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true, ...s,
+                id: s.eventId || eventId,
+                time: normalizeTimeValue(s.time), endTime: normalizeTimeValue(s.endTime), date: normalizeDateValue(s.date) || ev.date };
             newParticipants = remote.participants;
             newPdfHeader = (cached && cached.pdfHeader) || pdfHeader;
         } else if (cached) {
-            newMeeting = cached.meeting;
+            newMeeting = { ...cached.meeting, id: (cached.meeting && cached.meeting.id) || eventId };
             newParticipants = Array.isArray(cached.participants) ? cached.participants : [];
             newPdfHeader = cached.pdfHeader || pdfHeader;
         } else {
-            newMeeting = { title: '', date, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
+            newMeeting = { title: ev.title || '', date: ev.date, id: eventId, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
             newParticipants = [];
             newPdfHeader = pdfHeader;
         }
         setMeeting(newMeeting);
         setParticipants(newParticipants);
         setPdfHeader(newPdfHeader);
-        saveDataForDate(date, { meeting: newMeeting, pdfHeader: newPdfHeader, participants: newParticipants });
+        saveDataForDate(eventId, { meeting: newMeeting, pdfHeader: newPdfHeader, participants: newParticipants });
+        setActiveTab('settings');
+    };
+    // Membuat kegiatan/sesi BARU — tanggal boleh sama dengan kegiatan yang
+    // sedang dibuka, karena ID kegiatannya baru & unik.
+    const startNewEvent = () => {
+        const baseDate = meeting.date || todayStr;
+        const newMeeting = { title: '', date: baseDate, id: generateEventId(baseDate), time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true };
+        setMeeting(newMeeting);
+        setParticipants([]);
         setActiveTab('settings');
     };
     const handleMeetingChange = (e) => {
@@ -830,23 +869,22 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
         });
     };
     const [movingParticipantId, setMovingParticipantId] = useState(null);
-    const [moveTargetDate, setMoveTargetDate] = useState('');
+    const [moveTargetEventId, setMoveTargetEventId] = useState('');
     const startMoveParticipant = (p) => {
         setMovingParticipantId(p.id);
-        const firstOther = eventsList.find(ev => ev.date !== meeting.date);
-        setMoveTargetDate(firstOther ? firstOther.date : '');
+        const firstOther = eventsList.find(ev => ev.eventId !== meeting.id);
+        setMoveTargetEventId(firstOther ? firstOther.eventId : '');
     };
     const confirmMoveParticipant = (p) => {
-        const newDate = moveTargetDate;
-        if (!newDate || newDate === meeting.date) { setMovingParticipantId(null); return; }
-        const targetEvent = eventsList.find(ev => ev.date === newDate);
-        showConfirm(`Pindahkan data "${p.name}" ke kegiatan "${(targetEvent && targetEvent.title) || newDate}" (${newDate})?`, () => {
+        const targetEvent = eventsList.find(ev => ev.eventId === moveTargetEventId);
+        if (!targetEvent || targetEvent.eventId === meeting.id) { setMovingParticipantId(null); return; }
+        showConfirm(`Pindahkan data "${p.name}" ke kegiatan "${targetEvent.title || targetEvent.eventId}" (${targetEvent.date})?`, () => {
             setParticipants(arr => arr.filter(x => x.id !== p.id));
-            moveParticipantDateInSheet(p.id, newDate);
-            const targetSaved = loadSavedDataForDate(newDate);
+            moveParticipantDateInSheet(p.id, targetEvent);
+            const targetSaved = loadSavedDataForDate(targetEvent.eventId);
             const targetParticipants = (targetSaved && Array.isArray(targetSaved.participants)) ? targetSaved.participants : [];
-            saveDataForDate(newDate, {
-                meeting: (targetSaved && targetSaved.meeting) || { title: (targetEvent && targetEvent.title) || '', date: newDate, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true },
+            saveDataForDate(targetEvent.eventId, {
+                meeting: (targetSaved && targetSaved.meeting) || { title: targetEvent.title || '', date: targetEvent.date, id: targetEvent.eventId, time: '', endTime: '', mode: 'Offline', location: '', allowManualEntry: true },
                 pdfHeader: (targetSaved && targetSaved.pdfHeader) || { text: 'DAFTAR HADIR', logo: '' },
                 participants: [...targetParticipants, p]
             });
@@ -864,16 +902,16 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
     if (loadingEvents) {
         historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Memuat daftar kegiatan...");
     } else if (eventsList.length === 0) {
-        historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Belum ada riwayat kegiatan tersimpan, atau Apps Script belum di-update ke versi yang mendukung ini (v7).");
+        historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Belum ada riwayat kegiatan tersimpan, atau Apps Script belum di-update ke versi yang mendukung ini (v8).");
     } else {
         const eventRows = eventsList.map(function(ev) {
-            const isCurrent = ev.date === meeting.date;
-            return React.createElement("div", { key: ev.date, className: "flex items-center justify-between py-3 gap-3" },
+            const isCurrent = ev.eventId === meeting.id;
+            return React.createElement("div", { key: ev.eventId, className: "flex items-center justify-between py-3 gap-3" },
                 React.createElement("div", null,
                     React.createElement("p", { className: "font-medium text-gray-800" }, ev.title),
                     React.createElement("p", { className: "text-xs text-gray-500" }, ev.date + (ev.date === todayStr ? ' (Hari ini)' : ''))),
                 React.createElement("button", {
-                    onClick: () => switchToDate(ev.date),
+                    onClick: () => switchToEvent(ev),
                     disabled: isCurrent,
                     className: `text-xs px-3 py-1.5 rounded-md font-medium shrink-0 ${isCurrent ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}`
                 }, isCurrent ? 'Sedang Dilihat' : 'Lihat'));
@@ -881,9 +919,13 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
         historyBody = React.createElement("div", { className: "divide-y" }, eventRows);
     }
     const historyTabContent = React.createElement("div", { className: "bg-white rounded-xl border border-gray-200 shadow-sm p-5" },
-        React.createElement("div", { className: "flex justify-between items-center mb-4 border-b pb-2" },
+        React.createElement("div", { className: "flex flex-wrap justify-between items-center gap-2 mb-4 border-b pb-2" },
             React.createElement("h3", { className: "font-bold text-gray-800" }, "Riwayat Seluruh Kegiatan"),
-            React.createElement("button", { onClick: loadEventsList, className: "text-xs text-blue-600 hover:underline" }, "Muat Ulang")),
+            React.createElement("div", { className: "flex items-center gap-3" },
+                React.createElement("button", { onClick: startNewEvent, className: "text-xs bg-green-600 hover:bg-green-700 text-white font-medium px-3 py-1.5 rounded-md flex items-center gap-1" },
+                    React.createElement(Plus, { size: 14 }), " Kegiatan/Sesi Baru"),
+                React.createElement("button", { onClick: loadEventsList, className: "text-xs text-blue-600 hover:underline" }, "Muat Ulang"))),
+        React.createElement("p", { className: "text-xs text-gray-500 -mt-2 mb-3" }, "Boleh membuat kegiatan baru dengan tanggal yang sama seperti kegiatan lain — akan tetap tersimpan terpisah."),
         historyBody);
     const tabBtn = (id, label) => React.createElement("button", { onClick: () => setActiveTab(id), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, label);
     const inputCls = "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50";
@@ -902,7 +944,7 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                 "Sedang menampilkan kegiatan tanggal ",
                 React.createElement("strong", null, meeting.date),
                 " (bukan hari ini)."),
-            React.createElement("button", { onClick: () => switchToDate(todayStr), className: "text-sm font-semibold underline hover:no-underline" }, "Kembali ke Hari Ini"))),
+            React.createElement("button", { onClick: () => { const todays = eventsList.filter(e => e.date === todayStr); if (todays.length > 0) { switchToEvent(todays[0]); } else { setActiveTab('history'); } }, className: "text-sm font-semibold underline hover:no-underline" }, "Lihat Kegiatan Hari Ini"))),
         activeTab === 'settings' && (React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-6" },
             React.createElement("div", { className: "bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4" },
                 React.createElement("h3", { className: "font-bold text-gray-800 border-b pb-2" }, "Detail Kegiatan"),
@@ -934,7 +976,7 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                 React.createElement("button", { onClick: onSaveSettings, className: "w-full flex justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium py-3 rounded-lg mt-2" },
                     React.createElement(CheckCircle, { size: 18 }),
                     " Simpan Data"),
-                React.createElement("p", { className: "text-xs text-gray-500 text-center -mt-2" }, "Judul, tanggal & lokasi akan tersimpan untuk tanggal kegiatan ini, dan halaman absensi tidak lagi menampilkan data contoh.")),
+                React.createElement("p", { className: "text-xs text-gray-500 text-center -mt-2" }, "Judul, tanggal & lokasi akan tersimpan untuk kegiatan/sesi ini secara terpisah — kegiatan lain di tanggal yang sama tidak akan tertimpa.")),
             React.createElement("div", { className: "bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4" },
                 React.createElement("h3", { className: "font-bold text-gray-800 border-b pb-2 flex items-center gap-2" },
                     React.createElement(ImageIcon, { size: 18 }),
@@ -989,7 +1031,7 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                                 React.createElement("th", { className: "px-4 py-2 text-center" }, "Hapus"))),
                         React.createElement("tbody", { className: "divide-y" }, participants.map(p => {
                             const disCount = ((p.disabilities || []).length) + (p.disabilityOther ? 1 : 0);
-                            const otherEvents = eventsList.filter(ev => ev.date !== meeting.date);
+                            const otherEvents = eventsList.filter(ev => ev.eventId !== meeting.id);
                             return (React.createElement("tr", { key: p.id, className: "hover:bg-gray-50" },
                                 React.createElement("td", { className: "px-4 py-2" },
                                     React.createElement("span", { className: "font-medium" }, p.name),
@@ -1000,10 +1042,10 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                                             : React.createElement("span", { className: "text-gray-400" }, "Belum diisi")),
                                 React.createElement("td", { className: "px-4 py-2 text-center" }, p.signature ? React.createElement("span", { className: "text-green-600 font-bold" }, "\u2713") : '-'),
                                 React.createElement("td", { className: "px-4 py-2 text-center min-w-[140px]" }, movingParticipantId === p.id ? (React.createElement("div", { className: "flex items-center gap-1" },
-                                    React.createElement("select", { value: moveTargetDate, onChange: e => setMoveTargetDate(e.target.value), className: "text-xs border rounded p-1 flex-1" },
+                                    React.createElement("select", { value: moveTargetEventId, onChange: e => setMoveTargetEventId(e.target.value), className: "text-xs border rounded p-1 flex-1" },
                                         otherEvents.length === 0
                                             ? React.createElement("option", { value: "" }, "Tidak ada kegiatan lain")
-                                            : otherEvents.map(ev => React.createElement("option", { key: ev.date, value: ev.date }, `${ev.date} — ${ev.title}`))),
+                                            : otherEvents.map(ev => React.createElement("option", { key: ev.eventId, value: ev.eventId }, `${ev.date} — ${ev.title}`))),
                                     React.createElement("button", { onClick: () => confirmMoveParticipant(p), title: "Konfirmasi pindah", className: "text-green-600 hover:text-green-800" },
                                         React.createElement(CheckCircle, { size: 16 })),
                                     React.createElement("button", { onClick: () => setMovingParticipantId(null), title: "Batal", className: "text-gray-400 hover:text-gray-600" },
@@ -1019,7 +1061,8 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
 // VIEW: PILIH KEGIATAN (layar pembuka sebelum peserta absen)
 // ==========================================
 function EventSelectorView({ eventsList, loadingEvents, loadingSelected, todayStr, onSelectEvent }) {
-    const todayEvent = eventsList.find(ev => ev.date === todayStr);
+    // Sekarang bisa ada LEBIH DARI SATU kegiatan/sesi pada tanggal hari ini.
+    const todayEvents = eventsList.filter(ev => ev.date === todayStr);
     const otherEvents = eventsList.filter(ev => ev.date !== todayStr).sort((a, b) => a.date < b.date ? 1 : -1);
     if (loadingSelected) {
         return React.createElement("div", { className: "text-center py-20 text-gray-500" }, "Memuat data kegiatan...");
@@ -1027,18 +1070,18 @@ function EventSelectorView({ eventsList, loadingEvents, loadingSelected, todaySt
     return (React.createElement("div", { className: "max-w-2xl mx-auto space-y-6 animate-in fade-in duration-500" },
         React.createElement("div", { className: "text-center pt-4" },
             React.createElement("h2", { className: "text-xl font-bold text-gray-900" }, "Pilih Kegiatan"),
-            React.createElement("p", { className: "text-sm text-gray-500 mt-1" }, "Pilih kegiatan yang sesuai sebelum mengisi kehadiran.")),
+            React.createElement("p", { className: "text-sm text-gray-500 mt-1" }, "Pilih kegiatan/sesi yang sesuai sebelum mengisi kehadiran.")),
         loadingEvents ? (React.createElement("p", { className: "text-sm text-gray-500 text-center py-10" }, "Memuat daftar kegiatan...")) : (React.createElement(React.Fragment, null,
             React.createElement("div", null,
                 React.createElement("h3", { className: "text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 px-1" }, "Kegiatan Hari Ini"),
-                todayEvent ? (React.createElement("button", { onClick: () => onSelectEvent(todayEvent.date), className: "w-full text-left bg-white border-2 border-blue-500 rounded-xl p-5 shadow-sm hover:shadow-md hover:bg-blue-50/40 transition flex items-center justify-between gap-4" },
+                todayEvents.length > 0 ? (React.createElement("div", { className: "space-y-3" }, todayEvents.map(ev => (React.createElement("button", { key: ev.eventId, onClick: () => onSelectEvent(ev), className: "w-full text-left bg-white border-2 border-blue-500 rounded-xl p-5 shadow-sm hover:shadow-md hover:bg-blue-50/40 transition flex items-center justify-between gap-4" },
                     React.createElement("div", null,
-                        React.createElement("p", { className: "font-bold text-gray-900 text-lg leading-snug" }, todayEvent.title),
-                        React.createElement("p", { className: "text-sm text-blue-600 font-medium mt-1" }, formatDateID(todayEvent.date))),
-                    React.createElement("span", { className: "shrink-0 bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-lg" }, "Pilih"))) : (React.createElement("div", { className: "bg-white border border-dashed border-gray-300 rounded-xl p-5 text-center text-sm text-gray-400" }, "Tidak ada kegiatan terjadwal untuk hari ini (", formatDateID(todayStr), ")."))),
+                        React.createElement("p", { className: "font-bold text-gray-900 text-lg leading-snug" }, ev.title),
+                        React.createElement("p", { className: "text-sm text-blue-600 font-medium mt-1" }, formatDateID(ev.date), ev.time ? ` — ${ev.time}` : '')),
+                    React.createElement("span", { className: "shrink-0 bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-lg" }, "Pilih")))))) : (React.createElement("div", { className: "bg-white border border-dashed border-gray-300 rounded-xl p-5 text-center text-sm text-gray-400" }, "Tidak ada kegiatan terjadwal untuk hari ini (", formatDateID(todayStr), ")."))),
             otherEvents.length > 0 && (React.createElement("div", null,
                 React.createElement("h3", { className: "text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 px-1" }, "Kegiatan Lainnya"),
-                React.createElement("div", { className: "bg-white rounded-xl border border-gray-200 shadow-sm divide-y" }, otherEvents.map(ev => (React.createElement("button", { key: ev.date, onClick: () => onSelectEvent(ev.date), className: "w-full text-left p-4 hover:bg-gray-50 transition flex items-center justify-between gap-4" },
+                React.createElement("div", { className: "bg-white rounded-xl border border-gray-200 shadow-sm divide-y" }, otherEvents.map(ev => (React.createElement("button", { key: ev.eventId, onClick: () => onSelectEvent(ev), className: "w-full text-left p-4 hover:bg-gray-50 transition flex items-center justify-between gap-4" },
                     React.createElement("div", null,
                         React.createElement("p", { className: "font-medium text-gray-800" }, ev.title),
                         React.createElement("p", { className: "text-xs text-gray-500" }, formatDateID(ev.date))),
