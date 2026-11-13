@@ -152,9 +152,17 @@ async function syncSettingsToSheet(meeting) {
             mode: meeting.mode,
             location: meeting.location,
             allowManualEntry: meeting.allowManualEntry,
+            showInAttendance: meeting.showInAttendance !== false,
         });
         return true;
     } catch (err) { console.error('Gagal menyimpan pengaturan ke Google Sheets:', err); return false; }
+}
+async function syncEventVisibility(eventId, visible) {
+    if (!isWebhookReady()) { console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi.'); return false; }
+    try {
+        await postToSheet({ action: 'setEventVisibility', eventId: eventId, showInAttendance: visible });
+        return true;
+    } catch (err) { console.error('Gagal mengubah tampil/sembunyi kegiatan:', err); return false; }
 }
 async function syncParticipantToSheet(meeting, participant, opts = {}) {
     if (!isWebhookReady()) { console.warn('GOOGLE_SHEET_WEBHOOK_URL belum diisi.'); return false; }
@@ -236,7 +244,7 @@ async function fetchEventsList() {
         if (!res.ok) return [];
         const data = await res.json();
         const list = Array.isArray(data && data.events) ? data.events : [];
-        return list.map(ev => ({ ...ev, date: normalizeDateValue(ev.date), eventId: ev.eventId || ev.date }));
+        return list.map(ev => ({ ...ev, date: normalizeDateValue(ev.date), eventId: ev.eventId || ev.date, showInAttendance: !(ev.showInAttendance === false || ev.showInAttendance === 'FALSE' || ev.showInAttendance === 'false') }));
     } catch (err) {
         console.error('Gagal mengambil daftar kegiatan:', err);
         return [];
@@ -794,6 +802,7 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
     const [newParticipant, setNewParticipant] = useState(emptyParticipantForm());
     const [eventsList, setEventsList] = useState([]);
     const [loadingEvents, setLoadingEvents] = useState(false);
+    const [visError, setVisError] = useState('');
     const todayStr = getTodayWIB();
     const isViewingToday = meeting.date === todayStr;
     const loadEventsList = () => {
@@ -801,6 +810,7 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
         fetchEventsList().then(list => { setEventsList(list); setLoadingEvents(false); });
     };
     useEffect(() => { loadEventsList(); }, []);
+    useEffect(() => { if (activeTab === 'history') loadEventsList(); }, [activeTab]);
     // ev = { eventId, date, title } dari eventsList.
     const switchToEvent = async (ev) => {
         const eventId = ev.eventId;
@@ -906,6 +916,19 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
             }
         });
     };
+    // Tampilkan / sembunyikan satu kegiatan dari halaman absen peserta.
+    const toggleVisibility = async (ev) => {
+        const next = ev.showInAttendance === false;
+        setVisError('');
+        setEventsList(prev => prev.map(e => e.eventId === ev.eventId ? { ...e, showInAttendance: next } : e));
+        if (ev.eventId === meeting.id) setMeeting(prev => ({ ...prev, showInAttendance: next }));
+        const ok = await syncEventVisibility(ev.eventId, next);
+        if (!ok) {
+            setEventsList(prev => prev.map(e => e.eventId === ev.eventId ? { ...e, showInAttendance: !next } : e));
+            if (ev.eventId === meeting.id) setMeeting(prev => ({ ...prev, showInAttendance: !next }));
+            setVisError('Gagal menyimpan pengaturan tampil/sembunyi. Periksa koneksi lalu coba lagi.');
+        }
+    };
     let historyBody;
     if (loadingEvents) {
         historyBody = React.createElement("p", { className: "text-sm text-gray-500 text-center py-8" }, "Memuat daftar kegiatan...");
@@ -914,11 +937,20 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
     } else {
         const eventRows = eventsList.map(function(ev) {
             const isCurrent = ev.eventId === meeting.id;
+            const visible = ev.showInAttendance !== false;
             return React.createElement("div", { key: ev.eventId, className: "flex items-center justify-between py-3 gap-3" },
                 React.createElement("div", null,
                     React.createElement("p", { className: "font-medium text-gray-800" }, ev.title || '(Tanpa Judul)'),
                     React.createElement("p", { className: "text-xs text-gray-500" }, ev.date + (ev.date === todayStr ? ' (Hari ini)' : ''))),
                 React.createElement("div", { className: "flex items-center gap-2 shrink-0" },
+                    React.createElement("button", {
+                        onClick: () => toggleVisibility(ev), role: "switch", "aria-checked": visible,
+                        title: visible ? "Tampil di halaman absen — klik untuk menyembunyikan" : "Disembunyikan dari halaman absen — klik untuk menampilkan",
+                        className: "flex items-center gap-1.5 text-xs shrink-0 mr-1"
+                    },
+                        React.createElement("span", { className: `relative inline-block w-9 h-5 rounded-full transition-colors ${visible ? 'bg-green-500' : 'bg-gray-300'}` },
+                            React.createElement("span", { className: `absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${visible ? 'left-[18px]' : 'left-0.5'}` })),
+                        React.createElement("span", { className: visible ? 'text-green-700 font-medium' : 'text-gray-500' }, visible ? 'Tampil' : 'Sembunyi')),
                     React.createElement("button", {
                         onClick: () => switchToEvent(ev),
                         disabled: isCurrent,
@@ -940,6 +972,8 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                     React.createElement(Plus, { size: 14 }), " Kegiatan/Sesi Baru"),
                 React.createElement("button", { onClick: loadEventsList, className: "text-xs text-blue-600 hover:underline" }, "Muat Ulang"))),
         React.createElement("p", { className: "text-xs text-gray-500 -mt-2 mb-3" }, "Boleh membuat kegiatan baru dengan tanggal yang sama seperti kegiatan lain — akan tetap tersimpan terpisah."),
+        React.createElement("p", { className: "text-xs text-gray-500 mb-3" }, "Geser tombol Tampil/Sembunyi untuk memilih kegiatan mana yang muncul di halaman absen peserta."),
+        visError && React.createElement("p", { className: "text-xs text-red-600 mb-3" }, visError),
         historyBody);
     const tabBtn = (id, label) => React.createElement("button", { onClick: () => setActiveTab(id), className: `px-6 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab === id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}` }, label);
     const inputCls = "w-full text-sm p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50";
@@ -987,6 +1021,11 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
                     React.createElement("input", { type: "checkbox", name: "allowManualEntry", checked: meeting.allowManualEntry, onChange: handleMeetingChange, className: "w-4 h-4 mt-0.5 text-blue-600 rounded" }),
                     React.createElement("div", null,
                         React.createElement("span", { className: "text-sm font-bold text-blue-900 block" }, "Izinkan Isi Mandiri"))),
+                React.createElement("label", { className: "flex items-start gap-3 cursor-pointer p-3 bg-green-50 rounded-lg border border-green-100" },
+                    React.createElement("input", { type: "checkbox", name: "showInAttendance", checked: meeting.showInAttendance !== false, onChange: handleMeetingChange, className: "w-4 h-4 mt-0.5 text-green-600 rounded" }),
+                    React.createElement("div", null,
+                        React.createElement("span", { className: "text-sm font-bold text-green-900 block" }, "Tampilkan di halaman absen"),
+                        React.createElement("span", { className: "text-xs text-green-800" }, "Jika dimatikan, kegiatan ini tidak muncul di daftar pilihan peserta."))),
                 React.createElement("button", { onClick: onSaveSettings, className: "w-full flex justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium py-3 rounded-lg mt-2" },
                     React.createElement(CheckCircle, { size: 18 }),
                     " Simpan Data"),
@@ -1064,8 +1103,10 @@ function AdminPortal({ meeting, setMeeting, participants, setParticipants, pdfHe
 // ==========================================
 function EventSelectorView({ eventsList, loadingEvents, loadingSelected, todayStr, onSelectEvent }) {
     // Sekarang bisa ada LEBIH DARI SATU kegiatan/sesi pada tanggal hari ini.
-    const todayEvents = eventsList.filter(ev => ev.date === todayStr);
-    const otherEvents = eventsList.filter(ev => ev.date !== todayStr).sort((a, b) => a.date < b.date ? 1 : -1);
+    // Hanya kegiatan yang dibuka admin ("Tampilkan di halaman absen") yang muncul untuk peserta.
+    const visibleEvents = eventsList.filter(ev => ev.showInAttendance !== false);
+    const todayEvents = visibleEvents.filter(ev => ev.date === todayStr);
+    const otherEvents = visibleEvents.filter(ev => ev.date !== todayStr).sort((a, b) => a.date < b.date ? 1 : -1);
     if (loadingSelected) {
         return React.createElement("div", { className: "text-center py-20 text-gray-500" }, "Memuat data kegiatan...");
     }
@@ -1088,7 +1129,7 @@ function EventSelectorView({ eventsList, loadingEvents, loadingSelected, todaySt
                         React.createElement("p", { className: "font-medium text-gray-800" }, ev.title),
                         React.createElement("p", { className: "text-xs text-gray-500" }, formatDateID(ev.date))),
                     React.createElement(ChevronLeft, { size: 16, className: "text-gray-300 rotate-180 shrink-0" }))))))),
-            eventsList.length === 0 && (React.createElement("div", { className: "bg-white border border-dashed border-gray-300 rounded-xl p-8 text-center text-sm text-gray-400" }, "Belum ada kegiatan tersimpan sama sekali."))))));
+            visibleEvents.length === 0 && (React.createElement("div", { className: "bg-white border border-dashed border-gray-300 rounded-xl p-8 text-center text-sm text-gray-400" }, "Belum ada kegiatan yang dibuka untuk absen."))))));
 }
 function PrintTemplate({ meeting, participants, pdfHeader, logoError }) {
     const formattedDate = formatDateID(meeting.date);
